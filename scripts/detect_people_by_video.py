@@ -5,7 +5,9 @@ import gc
 import os
 import cv2
 import numpy as np
+import argparse
 
+# Copy hàm detect_people_with_opencv từ file detect_people.py
 def detect_people_with_opencv(image_path, confidence_threshold=0.5):
     """
     Phát hiện người trong ảnh sử dụng OpenCV DNN và mô hình YOLO
@@ -100,9 +102,13 @@ def detect_people_with_opencv(image_path, confidence_threshold=0.5):
     
     return boxes, confidences
 
-def process_people_detection():
+def detect_people_for_video(video_name, reprocess=False):
     """
-    Hàm chính xử lý phát hiện người
+    Hàm xử lý phát hiện người cho frames của một video cụ thể
+    
+    Args:
+        video_name: Tên video (không có đuôi mở rộng, ví dụ: 'test', 'test2')
+        reprocess: Nếu True, xử lý lại tất cả frames dù đã có person_detections
     """
     # Kết nối MongoDB
     fo.config.database_uri = "mongodb://mongo:27017"
@@ -116,19 +122,36 @@ def process_people_detection():
     frames = fo.load_dataset(frames_dataset_name)
     print(f"Đã load dataset '{frames_dataset_name}' với {len(frames)} frames")
 
-    # Lấy frames chưa được xử lý (không có trường person_detections)
-    #unprocessed_frames = frames.match(~F("person_detections").exists())
-    unprocessed_frames = frames.match(
-    (F("person_detections").exists() == False) |
-    (F("person_detections.detections").exists() == False) |
-    (F("person_detections.detections").length() == 0))
-    total_unprocessed = len(unprocessed_frames)
+    # Tạo filter để lấy frames của video cụ thể
+    pattern = f"/frames/{video_name}/"
+    filter_expr = F("filepath").re_match(f".*{pattern}.*")
     
-    if total_unprocessed == 0:
-        print("Không có frames mới cần xử lý phát hiện người.")
+    # Nếu reprocess=False, chỉ xử lý frames chưa có person_detections
+    if not reprocess:
+        filter_expr = filter_expr & (~F("person_detections").exists())
+    
+    # Lấy frames từ video cụ thể
+    video_frames = frames.match(filter_expr)
+    
+    # Lấy danh sách các frames thuộc video này để đảm bảo kết quả chính xác 
+    print(f"Đang tìm frames của video '{video_name}'...")
+    
+    # Tính toán số lượng frames thủ công để tránh lỗi MongoDB
+    frame_ids = []
+    for sample in frames:
+        if pattern in sample.filepath and (reprocess or not sample.has_field("person_detections")):
+            frame_ids.append(sample.id)
+    
+    # Nếu không có frames nào cần xử lý thì kết thúc
+    if not frame_ids:
+        print(f"Không tìm thấy frames {'' if reprocess else 'mới '} nào cho video '{video_name}'")
         return True
     
-    print(f"Tìm thấy {total_unprocessed} frames mới cần xử lý phát hiện người.")
+    # Chọn samples tương ứng
+    video_frames = frames.select(frame_ids)
+    total_frames = len(frame_ids)
+    
+    print(f"Tìm thấy {total_frames} frames {'' if reprocess else 'mới '} cần xử lý phát hiện người cho video '{video_name}'")
 
     # Thiết lập tham số xử lý
     batch_size = 8  # Batch size nhỏ để tránh OOM
@@ -146,10 +169,10 @@ def process_people_detection():
         print("Chuyển sang sử dụng OpenCV DNN để phát hiện người")
         use_fiftyone_model = False
 
-    print("\nĐang thực hiện nhận diện người...")
+    print(f"\nĐang thực hiện nhận diện người cho video '{video_name}'...")
 
-    # Lấy tất cả IDs của frames chưa xử lý
-    batch_ids_all = unprocessed_frames.values("id")
+    # Lấy tất cả IDs của frames cần xử lý
+    batch_ids_all = video_frames.values("id")
     
     # Xử lý theo từng nhóm nhỏ để tránh OOM
     people_count = 0
@@ -228,20 +251,34 @@ def process_people_detection():
             print(f"Lỗi khi xử lý batch {i+1}: {e}")
             continue
 
-    # Lấy tổng số frames có người sau khi xử lý xong
-    person_frames = frames.match(
-        F("person_detections.detections").filter(F("label") == "person").length() > 0
-    )
-    frames_with_people = len(person_frames)
-    total_frames = len(frames)
-
-    print(f"\nĐã hoàn thành nhận diện người trong {frames_dataset_name}")
-    print(f"Số frames mới được xử lý: {total_unprocessed}")
-    print(f"Số người mới được nhận diện: {people_count}")
-    print(f"Tổng số frames có người: {frames_with_people}/{total_frames} ({frames_with_people/total_frames*100:.2f}%)")
+    # Lấy tổng số frames có người chỉ trong video này
+    # Đếm thủ công để tránh lỗi MongoDB
+    frames_with_people = 0
+    total_video_frames = 0
+    
+    print("Đang tính toán thống kê...")
+    for sample in frames:
+        if pattern in sample.filepath:
+            total_video_frames += 1
+            if sample.has_field("person_detections") and len(sample.person_detections.detections) > 0:
+                frames_with_people += 1
+    
+    print(f"\nĐã hoàn thành nhận diện người cho video '{video_name}'")
+    print(f"Số frames được xử lý: {total_frames}")
+    print(f"Số người được nhận diện: {people_count}")
+    print(f"Tổng số frames có người trong video này: {frames_with_people}/{total_video_frames} ({frames_with_people/total_video_frames*100:.2f}% nếu có frames)")
     print("Truy cập http://localhost:5151 để xem kết quả")
     
     return True
 
 if __name__ == "__main__":
-    process_people_detection()
+    # Tạo parser cho tham số dòng lệnh
+    parser = argparse.ArgumentParser(description="Detect people in frames of a specific video")
+    parser.add_argument("video_name", help="Name of the video to process (e.g., 'test', 'test2')")
+    parser.add_argument("--reprocess", action="store_true", help="Reprocess all frames, even if they already have person_detections")
+    
+    # Parse tham số
+    args = parser.parse_args()
+    
+    # Chạy hàm xử lý với video được chỉ định
+    detect_people_for_video(args.video_name, args.reprocess) 

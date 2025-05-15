@@ -5,5 +5,5 @@ face_recognition
 opencv-python-headless
 numpy
 Pillow
-hdbscan
+
 

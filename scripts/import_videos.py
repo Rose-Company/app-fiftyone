@@ -31,25 +31,42 @@ dataset_name = "video_dataset"
 if fo.dataset_exists(dataset_name):
     print(f"\nĐang sử dụng dataset '{dataset_name}' đã tồn tại")
     dataset = fo.load_dataset(dataset_name)
-    # Xóa tất cả samples cũ (tùy chọn)
-    dataset.clear()
+    
+    # Lấy danh sách video đã tồn tại
+    existing_videos = set(dataset.values("filepath"))
+    print(f"Đã có {len(existing_videos)} videos trong dataset")
 else:
     print(f"\nTạo dataset mới '{dataset_name}'")
     dataset = fo.Dataset(dataset_name)
+    existing_videos = set()
 
-# Import videos
-samples = []
-for video_path in video_files:
-    sample = fo.Sample(filepath=video_path)
-    samples.append(sample)
+# Lọc các video mới chưa được import
+new_videos = [v for v in video_files if v not in existing_videos]
 
-# Thêm samples vào dataset
-dataset.add_samples(samples)
+if not new_videos:
+    print("\nKhông có video mới để import.")
+else:
+    print(f"\nImport {len(new_videos)} videos mới:")
+    for v in new_videos:
+        print(f"- {os.path.basename(v)}")
 
-# Tính toán metadata
-dataset.compute_metadata()
+    # Import videos mới
+    samples = []
+    for video_path in new_videos:
+        sample = fo.Sample(filepath=video_path)
+        samples.append(sample)
 
-print(f"\nĐã import thành công {len(dataset)} videos vào dataset '{dataset.name}'")
+    # Thêm samples vào dataset
+    dataset.add_samples(samples)
+
+    # Tính toán metadata cho samples mới
+    for sample in samples:
+        sample.compute_metadata()
+        sample.save()
+
+    print(f"\nĐã import thành công {len(new_videos)} videos mới vào dataset '{dataset.name}'")
+
+print(f"Tổng số videos trong dataset: {len(dataset)}")
 print("Truy cập http://localhost:5151 để xem dataset")
 
 # In danh sách tất cả datasets
