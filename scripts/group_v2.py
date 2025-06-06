@@ -10,24 +10,6 @@ import json
 import os
 import gc
 
-TUNING_PARAMS = {
-    # Tham số cho lần chạy HDBSCAN đầu tiên
-    "pass1": {
-        # !!! TUỲ CHỈNH GIÁ TRỊ CỐ ĐỊNH CỦA BẠN TẠI ĐÂY !!!
-        # Đây là kích thước cụm nhỏ nhất mà HDBSCAN sẽ xem xét.
-        # - GIÁ TRỊ NHỎ (vd: 2, 3): Nhạy hơn, có thể tìm thấy nhiều cụm nhỏ (tách nhân vật tốt hơn).
-        # - GIÁ TRỊ LỚN (vd: 5, 10): Ít nhạy hơn, có xu hướng tạo ra các cụm lớn hơn (gộp nhân vật tốt hơn).
-        "min_cluster_size": 2
-    },
-    # Tham số cho lần chạy HDBSCAN thứ hai (trên các điểm nhiễu)
-    "pass2": {
-        "trigger_min_noise_factor": 1.5, # Chạy pass2 nếu số điểm nhiễu >= min_cluster_size_pass1 * 1.5
-        "trigger_min_absolute_noise": 5, # Và số điểm nhiễu phải >= 5
-        "min_cluster_size_factor": 0.5,  # min_cluster_size_pass2 = min_cluster_size_pass1 * 0.5
-        "min_cluster_size_absolute_min": 2 # min_cluster_size_pass2 tối thiểu là 2
-    }
-}
-
 def estimate_optimal_clusters(embeddings, max_clusters=10):
     """
     Ước tính số lượng cụm tối ưu sử dụng nhiều phương pháp
@@ -326,12 +308,8 @@ def cluster_faces_dbscan(face_embeddings, eps=None, min_samples=5):
     
     return labels
 
-def cluster_faces_hdbscan(face_embeddings, min_cluster_size=5, min_samples=None, tuning_params=None):
-    """
-    Nhóm khuôn mặt bằng HDBSCAN với logic 2 lần chạy (two-pass) và tham số có thể tinh chỉnh.
-    Lần 1: Chạy trên toàn bộ dữ liệu.
-    Lần 2: Chạy trên các điểm nhiễu từ lần 1 để tìm các cụm nhỏ hơn.
-    """
+def cluster_faces_hdbscan(face_embeddings, min_cluster_size=5, min_samples=None):
+    """Nhóm khuôn mặt bằng HDBSCAN"""
     try:
         import hdbscan
     except ImportError:
@@ -348,110 +326,192 @@ def cluster_faces_hdbscan(face_embeddings, min_cluster_size=5, min_samples=None,
     # Chuẩn hóa embeddings
     embeddings_array = normalize(embeddings_array)
     
-    # --- PASS 1: Chạy HDBSCAN lần đầu ---
-    # Thiết lập min_samples nếu không được cung cấp
+    # Thiết lập min_samples nếu không được cung cấp, make it more robust for small min_cluster_size
     if min_samples is None:
-        min_samples = max(1, min_cluster_size - 1) if min_cluster_size <= 3 else max(2, min_cluster_size // 2)
+        if min_cluster_size <= 1: # Allow min_samples to be 1 if min_cluster_size is 1
+            min_samples = 1
+        elif min_cluster_size <= 3: # For small min_cluster_size (e.g. 2 or 3)
+            min_samples = max(1, min_cluster_size -1) # Try min_samples = 1 or 2
+        else: # Default logic for larger min_cluster_size
+            min_samples = max(2, min_cluster_size // 2) 
 
-    print(f"HDBSCAN (Pass 1) với tham số: min_cluster_size={min_cluster_size}, min_samples={min_samples}")
+    print(f"HDBSCAN (Pass 1) với tham số: min_cluster_size={min_cluster_size}, min_samples={min_samples}, metric='euclidean', allow_single_cluster=True (EOM selection)")
     
+    # Cluster sử dụng HDBSCAN với tham số chính xác - PASS 1
     clusterer_pass1 = hdbscan.HDBSCAN(
         min_cluster_size=min_cluster_size,
         min_samples=min_samples,
         metric='euclidean',
-        allow_single_cluster=True,
-        prediction_data=True
+        allow_single_cluster=True, 
+        prediction_data=True # Keep for potential later use, though primary use is for fit_predict here
     )
     
     labels = clusterer_pass1.fit_predict(embeddings_array)
     
     n_clusters_pass1 = len(set(l for l in labels if l != -1))
     n_noise_pass1 = list(labels).count(-1)
-    if len(labels) > 0:
-        print(f"HDBSCAN (Pass 1) tìm thấy {n_clusters_pass1} cụm và {n_noise_pass1} điểm nhiễu ({n_noise_pass1/len(labels)*100:.1f}%)")
-    else:
-        print("HDBSCAN (Pass 1) không có dữ liệu để xử lý.")
+    print(f"HDBSCAN (Pass 1) tìm thấy {n_clusters_pass1} cụm và {n_noise_pass1} điểm nhiễu ({n_noise_pass1/len(labels)*100:.1f}% nếu len > 0 else 0.0%)")
 
-    # --- PASS 2: Chạy lại trên các điểm nhiễu từ Pass 1 ---
-    if tuning_params and n_clusters_pass1 > 0: # Chỉ chạy pass 2 nếu có cấu hình và pass 1 tìm thấy ít nhất 1 cụm
-        pass2_params = tuning_params.get("pass2", {})
-        trigger_factor = pass2_params.get("trigger_min_noise_factor", 1.5)
-        trigger_absolute = pass2_params.get("trigger_min_absolute_noise", 5)
+    unique_labels_pass1, counts_pass1 = np.unique(labels, return_counts=True)
+    print("Phân bố kích thước clusters (Pass 1):")
+    for label, count in zip(unique_labels_pass1, counts_pass1):
+        if label == -1:
+            print(f"  Noise: {count} samples")
+        else:
+            print(f"  Cluster {label}: {count} samples")
+
+    # --- Secondary Clustering on Noise from Pass 1 ---
+    MIN_POINTS_FOR_SECONDARY_CLUSTERING = max(5, min_cluster_size * 2) # Heuristic: at least e.g. 5-10 points
+    # Parameters for secondary clustering - should be more sensitive
+    min_cluster_size_secondary = max(2, min_cluster_size // 2 if min_cluster_size > 2 else 2) 
+    min_samples_secondary = max(1, min_cluster_size_secondary // 2 if min_cluster_size_secondary > 1 else 1)
+
+    if n_noise_pass1 >= MIN_POINTS_FOR_SECONDARY_CLUSTERING and n_clusters_pass1 > 0 : # Only run if there's substantial noise AND some initial clusters were found
+        print(f"\nHDBSCAN (Pass 2) - Chạy lại trên {n_noise_pass1} điểm nhiễu từ Pass 1.")
+        print(f"  Tham số Pass 2: min_cluster_size={min_cluster_size_secondary}, min_samples={min_samples_secondary}")
         
-        min_points_for_secondary = max(trigger_absolute, int(min_cluster_size * trigger_factor))
+        noise_indices_pass1 = np.where(labels == -1)[0]
+        noise_embeddings_pass1 = embeddings_array[noise_indices_pass1]
 
-        if n_noise_pass1 >= min_points_for_secondary:
-            print(f"\nHDBSCAN (Pass 2) - Chạy lại trên {n_noise_pass1} điểm nhiễu từ Pass 1.")
-            
-            size_factor = pass2_params.get("min_cluster_size_factor", 0.5)
-            size_min = pass2_params.get("min_cluster_size_absolute_min", 2)
-            min_cluster_size_secondary = max(size_min, int(min_cluster_size * size_factor))
-            min_samples_secondary = max(1, min_cluster_size_secondary - 1) if min_cluster_size_secondary <= 3 else max(2, min_cluster_size_secondary // 2)
+        clusterer_pass2 = hdbscan.HDBSCAN(
+            min_cluster_size=min_cluster_size_secondary,
+            min_samples=min_samples_secondary,
+            metric='euclidean',
+            allow_single_cluster=True 
+            # prediction_data for pass 2 might not be needed if we don't recurse noise further
+        )
+        labels_pass2_raw = clusterer_pass2.fit_predict(noise_embeddings_pass1)
+        
+        n_clusters_pass2 = len(set(l for l in labels_pass2_raw if l != -1))
+        n_noise_pass2 = list(labels_pass2_raw).count(-1)
+        print(f"HDBSCAN (Pass 2) tìm thấy {n_clusters_pass2} cụm mới và {n_noise_pass2} điểm nhiễu còn lại.")
 
-            print(f"  Tham số Pass 2: min_cluster_size={min_cluster_size_secondary}, min_samples={min_samples_secondary}")
+        if n_clusters_pass2 > 0:
+            # Re-index labels from pass 2 so they don't clash with pass 1 labels
+            max_label_pass1 = -1
+            if n_clusters_pass1 > 0: # Should be true due to condition above
+                 max_label_pass1 = np.max(labels[labels != -1])
             
-            noise_indices_pass1 = np.where(labels == -1)[0]
-            noise_embeddings_pass1 = embeddings_array[noise_indices_pass1]
+            current_new_label_start = max_label_pass1 + 1
+            
+            # Create a mapping for pass 2 labels
+            labels_pass2_remapped = np.copy(labels_pass2_raw)
+            unique_raw_pass2_labels = sorted(list(set(l for l in labels_pass2_raw if l != -1))) # Get unique cluster IDs from pass2
+            
+            map_pass2_to_final = {}
+            for raw_p2_label in unique_raw_pass2_labels:
+                map_pass2_to_final[raw_p2_label] = current_new_label_start
+                current_new_label_start += 1
+            
+            # Apply the mapping
+            for i in range(len(labels_pass2_raw)):
+                if labels_pass2_raw[i] != -1:
+                    labels_pass2_remapped[i] = map_pass2_to_final[labels_pass2_raw[i]]
+                else:
+                    labels_pass2_remapped[i] = -1 # Noise from pass 2 remains -1
 
-            clusterer_pass2 = hdbscan.HDBSCAN(
-                min_cluster_size=min_cluster_size_secondary,
-                min_samples=min_samples_secondary,
-                metric='euclidean',
-                allow_single_cluster=True
-            )
-            labels_pass2_raw = clusterer_pass2.fit_predict(noise_embeddings_pass1)
+            # Update the main 'labels' array with results from pass 2
+            for i, original_noise_idx in enumerate(noise_indices_pass1):
+                labels[original_noise_idx] = labels_pass2_remapped[i]
             
-            n_clusters_pass2 = len(set(l for l in labels_pass2_raw if l != -1))
-            if n_clusters_pass2 > 0:
-                print(f"HDBSCAN (Pass 2) tìm thấy {n_clusters_pass2} cụm mới.")
-                max_label_pass1 = np.max(labels[labels != -1])
-                labels_pass2_raw[labels_pass2_raw != -1] += (max_label_pass1 + 1)
-                
-                # Cập nhật lại nhãn chính
-                for i, original_noise_idx in enumerate(noise_indices_pass1):
-                    labels[original_noise_idx] = labels_pass2_raw[i]
-            else:
-                print("Pass 2 không tìm thấy cụm mới nào.")
+            print("Phân bố kích thước clusters (Sau Pass 2 gộp vào):")
+            unique_labels_combined, counts_combined = np.unique(labels, return_counts=True)
+            for label, count in zip(unique_labels_combined, counts_combined):
+                if label == -1:
+                    print(f"  Noise (còn lại): {count} samples")
+                else:
+                    print(f"  Cluster {label}: {count} samples")
+        else:
+            print("Pass 2 không tìm thấy cụm mới nào trong nhiễu của Pass 1.")
+    elif n_clusters_pass1 == 0 and n_noise_pass1 > 0:
+        print("\nHDBSCAN (Pass 1) không tìm thấy cụm nào, tất cả là nhiễu. Sẽ được xử lý sau.")
     
-    # --- Xử lý các điểm nhiễu còn lại ---
+    # At this point, 'labels' contains results from Pass 1 and potentially refined by Pass 2.
+    # 'n_clusters' should reflect the total number of unique nonnoise clusters found.
+    n_clusters = len(set(l for l in labels if l != -1))
+    
+    # Xử lý điểm nhiễu còn lại (sau Pass 1 và Pass 2) sử dụng approximate_predict hoặc cdist
+    # For simplicity now, let's skip approximate_predict as it was causing warnings and might not be ideal for multiple passes.
+    # We will directly go to cdist based reassignment for any remaining -1.
+    
     if -1 in labels:
-        print("\nĐang gán lại các điểm nhiễu còn lại vào cụm gần nhất...")
+        print("\nĐang gán lại các điểm nhiễu còn lại vào cụm gần nhất (dựa trên tâm cụm)...")
         noise_indices_remaining = np.where(labels == -1)[0]
         valid_indices = np.where(labels != -1)[0]
         
-        if len(valid_indices) > 0:
+        if len(valid_indices) > 0 and len(noise_indices_remaining) > 0:
             cluster_centers = {}
-            valid_labels = sorted(list(set(l for l in labels if l != -1)))
-            for label_id in valid_labels:
-                cluster_centers[label_id] = np.mean(embeddings_array[labels == label_id], axis=0)
+            current_valid_cluster_ids = sorted(list(set(l for l in labels if l != -1))) # Get current valid cluster IDs
             
-            from scipy.spatial.distance import cdist
-            for idx in noise_indices_remaining:
-                noise_point = embeddings_array[idx].reshape(1, -1)
-                distances = {
-                    cluster_id: cdist(noise_point, center.reshape(1, -1), metric='euclidean')[0][0]
-                    for cluster_id, center in cluster_centers.items()
-                }
-                if distances:
-                    labels[idx] = min(distances, key=distances.get)
-        else:
-            print("Tất cả các điểm đều là nhiễu, tạo một cụm duy nhất.")
-            labels[:] = 0
+            for label_id in current_valid_cluster_ids:
+                mask = labels == label_id
+                if np.sum(mask) > 0: 
+                    cluster_centers[label_id] = np.mean(embeddings_array[mask], axis=0)
+            
+            if cluster_centers: 
+                from scipy.spatial.distance import cdist
+                for idx in noise_indices_remaining:
+                    noise_point = embeddings_array[idx].reshape(1, -1)
+                    distances = {
+                        cluster_id: cdist(noise_point, center.reshape(1, -1), metric='euclidean')[0][0]
+                        for cluster_id, center in cluster_centers.items()
+                    }
+                    if distances: 
+                        closest_cluster = min(distances, key=distances.get)
+                        labels[idx] = closest_cluster
+                    else: 
+                        # This case should ideally not be reached if cluster_centers is populated.
+                        # If for some reason it is, assign to the first valid cluster or 0.
+                        labels[idx] = current_valid_cluster_ids[0] if current_valid_cluster_ids else 0
+                
+                print("Phân bố sau khi gán nốt điểm nhiễu:")
+                unique_labels_final, counts_final = np.unique(labels, return_counts=True)
+                for label, count in zip(unique_labels_final, counts_final):
+                    print(f"  Cluster {label}: {count} samples")
 
-    # --- Ánh xạ lại nhãn để đảm bảo chúng liên tiếp từ 0 ---
-    unique_final_labels = sorted(list(set(labels)))
-    if not unique_final_labels:
-        return np.array([]) # Trả về mảng rỗng nếu không có nhãn nào
+        elif len(valid_indices) == 0 and len(noise_indices_remaining) > 0 : # All points are still noise
+            print("Tất cả các điểm vẫn là nhiễu sau các bước, tạo một cụm duy nhất.")
+            labels = np.zeros(len(labels), dtype=int)
+            # n_clusters is updated below
+        
+    # Đảm bảo nhãn là các số nguyên liên tiếp từ 0
+    # Recalculate n_clusters based on the final state of labels before re-mapping
+    final_unique_non_noise_labels = sorted(list(set(l for l in labels if l != -1)))
+    
+    if not final_unique_non_noise_labels and np.all(labels == -1): # Handles case where all points ended up as noise
+        labels = np.zeros(len(labels), dtype=int) # Assign all to cluster 0
+        final_unique_non_noise_labels = [0]
 
-    mapping = {old_label: new_label for new_label, old_label in enumerate(unique_final_labels)}
-    final_labels = np.array([mapping[label] for label in labels])
+    elif not final_unique_non_noise_labels and np.all(labels != -1): # All points in some cluster(s), but list is empty (e.g. single cluster 0)
+         final_unique_non_noise_labels = sorted(list(set(labels)))
+
+
+    mapping = {old_label: new_label for new_label, old_label in enumerate(final_unique_non_noise_labels)}
     
-    print("\nPhân bố cuối cùng:")
-    unique_labels, counts = np.unique(final_labels, return_counts=True)
-    for label, count in zip(unique_labels, counts):
-        print(f"  Cluster {label}: {count} samples")
+    final_labels_mapped = np.array([mapping.get(label, -1) for label in labels]) # Map to new, noise becomes -1 temporarily if not in mapping
+                                                                               # then handle these -1s if any.
     
-    return final_labels
+    # If any points were noise and not in final_unique_non_noise_labels, they'd be -1 from .get()
+    # This shouldn't happen if the above logic (assigning all remaining noise to a cluster or to 0) worked.
+    # But as a safeguard:
+    if -1 in final_labels_mapped:
+        # This implies some original -1 didn't get caught by reassignments and weren't in final_unique_non_noise_labels
+        # Assign them to the largest cluster or cluster 0
+        if final_unique_non_noise_labels: # If there were some valid clusters mapped
+            # Find largest cluster among the mapped ones
+            unique_mapped, counts_mapped = np.unique(final_labels_mapped[final_labels_mapped != -1], return_counts=True)
+            if len(unique_mapped) > 0:
+                largest_cluster_label = unique_mapped[np.argmax(counts_mapped)]
+                final_labels_mapped[final_labels_mapped == -1] = largest_cluster_label
+            else: # No valid clusters formed, everything was noise, map to 0
+                 final_labels_mapped[final_labels_mapped == -1] = 0
+        else: # No clusters formed at all, everything was noise, map all to 0
+            final_labels_mapped = np.zeros(len(labels), dtype=int)
+
+
+    labels = final_labels_mapped
+    
+    return labels
 
 def group_faces_into_characters():
     """Nhóm các khuôn mặt trong dataset thành các nhân vật theo từng video riêng biệt"""
@@ -459,7 +519,7 @@ def group_faces_into_characters():
     fo.config.database_uri = "mongodb://mongo:27017"
     
     # Load dataset khuôn mặt
-    face_dataset_name = "video_dataset_faces_dlib_test_2video"
+    face_dataset_name = "video_dataset_faces_dlib_test"
     if not fo.dataset_exists(face_dataset_name):
         print(f"Không tìm thấy dataset '{face_dataset_name}'")
         return
@@ -628,28 +688,59 @@ def group_faces_into_characters():
         print(f"\nBước 2: Nhóm các khuôn mặt trong video {video_id} bằng HDBSCAN")
         print("-" * 50)
         
-        # --- Tính toán min_cluster_size động từ TUNING_PARAMS ---
-        pass1_params = TUNING_PARAMS.get("pass1", {})
-        min_cluster_size_video = pass1_params.get("min_cluster_size", 3) # Lấy giá trị cố định, mặc định là 3
+        # Dynamic min_cluster_size adjustment - Further refinement
+        num_video_embeddings = len(all_embeddings)
+        if num_video_embeddings == 0: 
+            min_cluster_size_video = 1
+        elif num_video_embeddings < 10: 
+            min_cluster_size_video = max(1, num_video_embeddings // 3 if num_video_embeddings > 2 else 1) 
+        elif num_video_embeddings < 30: 
+            min_cluster_size_video = max(2, num_video_embeddings // 5)
+        elif num_video_embeddings < 80: # e.g., 30-79 embeddings (covers 75 from log)
+            # Let's be more aggressive here for smaller sets like 75.
+            # Old: max(2, num_video_embeddings // 10) -> for 75 was 7
+            min_cluster_size_video = max(2, num_video_embeddings // 20) # For 75 -> max(2,3) = 3. For 30 -> max(2,1) = 2.
+        elif num_video_embeddings < 200:
+            # Old: max(3, num_video_embeddings // 20)
+            min_cluster_size_video = max(3, num_video_embeddings // 25) # For 100 -> 4. For 199 -> 7
+        else: # For larger datasets
+            # Old: max(5, num_video_embeddings // 30)
+            min_cluster_size_video = max(5, num_video_embeddings // 40) # For 200 -> 5. For 400 -> 10
         
-        print(f"Sử dụng min_cluster_size cố định = {min_cluster_size_video} cho {len(all_embeddings)} embeddings (từ TUNING_PARAMS)")
+        if num_video_embeddings > 0 :
+            min_cluster_size_video = max(1, min_cluster_size_video)
+        else: 
+             min_cluster_size_video = 1
+
+        print(f"Sử dụng min_cluster_size động = {min_cluster_size_video} cho {num_video_embeddings} embeddings")
         
         try:
-            # Thử với tham số đã được tinh chỉnh
+            # Thử với tham số giống code cũ
             labels = cluster_faces_hdbscan(
                 all_embeddings, 
-                min_cluster_size=min_cluster_size_video,
-                tuning_params=TUNING_PARAMS  # Truyền toàn bộ cấu hình vào
+                min_cluster_size=min_cluster_size_video
+                # min_samples will be determined inside cluster_faces_hdbscan based on min_cluster_size_video
             )
             
+            # Nếu không tìm thấy cụm nào (hoặc chỉ 1 cụm nếu allow_single_cluster=False and it's all noise),
+            # và nhiều hơn 1 embedding (để tránh lỗi với KMeans)
+            # N_clusters from hdbscan includes noise as -1. So set(labels) might be {-1, 0, 1} for 2 clusters + noise.
+            # We want to check if hdbscan found *meaningful* clusters.
+            # len(set(l for l in labels if l != -1)) gives number of non-noise clusters.
             num_meaningful_clusters_hdbscan = len(set(l for l in labels if l != -1))
 
-            if num_meaningful_clusters_hdbscan == 0 and len(all_embeddings) > n_clusters:
-                print(f"HDBSCAN không tìm thấy cụm ý nghĩa. Thử với phương pháp dự phòng KMeans với {n_clusters} cụm...")
+            if num_meaningful_clusters_hdbscan == 0 and len(all_embeddings) > n_clusters : # n_clusters is from estimate_optimal_clusters
+                print(f"HDBSCAN không tìm thấy cụm ý nghĩa (found {num_meaningful_clusters_hdbscan}). Thử với phương pháp dự phòng KMeans với {n_clusters} cụm...")
                 labels = cluster_faces_kmeans(all_embeddings, n_clusters)
-            elif num_meaningful_clusters_hdbscan == 1 and len(all_embeddings) > n_clusters and n_clusters > 1:
-                print(f"HDBSCAN tìm thấy 1 cụm ý nghĩa nhưng KMeans đề xuất {n_clusters}. Thử KMeans.")
-                labels = cluster_faces_kmeans(all_embeddings, n_clusters)
+            elif num_meaningful_clusters_hdbscan == 1 and len(set(labels)) > 1 and len(all_embeddings) > n_clusters:
+                # This case means HDBSCAN might have found one cluster and some noise.
+                # If KMeans suggests more clusters, it might be better.
+                # Only switch if KMeans suggests more than 1 cluster.
+                if n_clusters > 1:
+                    print(f"HDBSCAN tìm thấy 1 cụm ý nghĩa nhưng KMeans đề xuất {n_clusters}. Thử KMeans.")
+                    labels = cluster_faces_kmeans(all_embeddings, n_clusters)
+                else:
+                    print(f"HDBSCAN tìm thấy 1 cụm ý nghĩa. Giữ kết quả từ HDBSCAN.")
 
         except Exception as e:
             print(f"Lỗi khi chạy HDBSCAN: {str(e)}. Sử dụng phương pháp KMeans thay thế...")

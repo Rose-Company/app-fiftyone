@@ -200,13 +200,91 @@ def cluster_face_embeddings(dataset, patches_field="dlib_face_detections", embed
     logger.info(f"Kiểm tra App hoặc dataset.get_brain_info('{brain_key}') để xem trạng thái và kết quả.")
     logger.info(f"Nhãn cluster (nếu được tạo) thường được thêm vào các đối tượng trong '{patches_field}.detections', ví dụ: trường '{brain_key}_cluster'.")
 
+def cluster_patches_with_brain(dataset, 
+                               patches_field="dlib_face_detections", 
+                               embedding_attr_on_patch="custom_embedding", 
+                               brain_key_prefix="brain_patch_clusters",
+                               method="umap", # Phương pháp giảm chiều, cũng có thể ảnh hưởng đến clustering
+                               clustering_algorithm=None, # Sẽ thảo luận thêm
+                               **kwargs): # Các tham số bổ sung cho compute_visualization hoặc clustering
+    """
+    Sử dụng fiftyone.brain.compute_visualization để có thể ngầm clustering
+    các patch embeddings.
+    """
+    logger.info(f"--- Bắt đầu clustering patch embeddings với fiftyone.brain ---")
+    logger.info(f"Dataset: {dataset.name}")
+    logger.info(f"Patches field: {patches_field}")
+    logger.info(f"Thuộc tính embedding trên patch: {embedding_attr_on_patch}")
+
+    # Tạo một brain_key duy nhất cho lần chạy này
+    # (Bạn có thể thêm tên thuật toán hoặc tham số vào brain_key nếu muốn)
+    run_brain_key = f"{brain_key_prefix}_{method}"
+    if clustering_algorithm:
+        run_brain_key += f"_{clustering_algorithm}"
+
+    logger.info(f"Sử dụng Brain Key: {run_brain_key}")
+
+    # Kiểm tra xem dữ liệu patch embedding có nhất quán không (quan trọng!)
+    # Bạn nên chạy hàm verify_embeddings_consistency trước khi gọi hàm này.
+    # (Giả sử verify_embeddings_consistency đã chạy và thành công)
+
+    try:
+        results = fob.compute_visualization(
+            dataset,
+            patches_field=patches_field,  # Chỉ định trường chứa các Detections (patches)
+            embeddings=embedding_attr_on_patch, # Chỉ tên thuộc tính embedding TRÊN MỖI PATCH
+            brain_key=run_brain_key,
+            method=method, # "umap", "tsne", "pca"
+            # num_dims=2, # (Mặc định là 2)
+            # Các tham số khác cho `compute_visualization` có thể được truyền qua `kwargs`
+            # Ví dụ: seed=51, umap_args={"n_neighbors": 15, "min_dist": 0.1}
+            verbose=True,
+            **kwargs
+        )
+        
+        logger.info(f"compute_visualization hoàn tất với brain_key: '{run_brain_key}'.")
+        
+        # Kiểm tra xem nhãn cluster có được tạo ra không
+        # Tên trường nhãn cluster thường có dạng <brain_key>_cluster hoặc tương tự,
+        # và nó được thêm vào MỖI detection object.
+        # Ví dụ: nếu run_brain_key là 'brain_patch_clusters_umap_hdbscan_cluster'
+        # hoặc 'brain_patch_clusters_umap_label'
+        
+        # Cách kiểm tra cụ thể sẽ phụ thuộc vào cách fob.compute_visualization
+        # (và các phương thức nó gọi bên trong) đặt tên cho trường cluster.
+        # Bạn có thể cần kiểm tra schema của một detection sau khi chạy.
+        
+        # Ví dụ kiểm tra một trường nhãn có thể:
+        possible_cluster_label_field_name_on_patch = f"{run_brain_key}_label" # Hoặc _cluster
+        
+        # Lấy một sample có detections để kiểm tra
+        sample_with_detections = dataset.match(F(patches_field).detections.length() > 0).first()
+        if sample_with_detections and sample_with_detections[patches_field].detections:
+            first_detection = sample_with_detections[patches_field].detections[0]
+            if hasattr(first_detection, possible_cluster_label_field_name_on_patch):
+                logger.info(f"Tìm thấy trường nhãn cluster tiềm năng: '{possible_cluster_label_field_name_on_patch}' trên detection.")
+                logger.info(f"Ví dụ nhãn cluster: {getattr(first_detection, possible_cluster_label_field_name_on_patch)}")
+            elif hasattr(first_detection, f"{run_brain_key}_cluster"):
+                 logger.info(f"Tìm thấy trường nhãn cluster tiềm năng: '{run_brain_key}_cluster' trên detection.")
+                 logger.info(f"Ví dụ nhãn cluster: {getattr(first_detection, f'{run_brain_key}_cluster')}")
+            else:
+                logger.warning(f"Không tự động tìm thấy trường nhãn cluster rõ ràng trên detection với prefix '{run_brain_key}'.")
+                logger.warning("Bạn có thể cần kiểm tra App hoặc schema để xem trường nhãn cluster (nếu có) được đặt tên là gì.")
+                logger.warning("Clustering có thể đã không được thực hiện hoặc bạn cần cấu hình thêm các tham số cho thuật toán clustering cụ thể.")
+
+        logger.info(f"Hãy mở FiftyOne App và chọn brain_key '{run_brain_key}' trong panel Embeddings để xem kết quả trực quan hóa.")
+        logger.info("Nếu clustering được thực hiện, bạn có thể tô màu các detection bằng trường nhãn cluster mới.")
+
+    except Exception as e:
+        logger.error(f"Lỗi trong quá trình compute_visualization/clustering: {e}", exc_info=True)
+
 if __name__ == "__main__":
     # Kết nối MongoDB
     fo.config.database_uri = "mongodb://mongo:27017"
     fo.config.database_name = "fiftyone" 
     logger.info(f"Kết nối tới MongoDB: {fo.config.database_uri}, DB: {fo.config.database_name}")
 
-    dataset_name = "video_dataset_faces_dlib" 
+    dataset_name = "video_dataset_faces_dlib_test" 
     if not fo.dataset_exists(dataset_name):
         logger.error(f"Dataset '{dataset_name}' không tồn tại. Vui lòng chạy script face_recognition_utils.py trước.")
         exit()
@@ -238,16 +316,26 @@ if __name__ == "__main__":
                                   detections_field=target_detections_field, 
                                   embedding_attr="custom_embedding")
     
-    logger.info("Script hoàn tất. Hãy kiểm tra log để biết chi tiết về các vấn đề (nếu có).")
-    logger.info("Nếu log cho thấy các embedding đã nhất quán, bạn có thể thử lại Clustering Plugin trong UI.")
+    logger.info("--- Hướng dẫn sử dụng Clustering Plugin (UI) với embeddings lồng nhau ---")
+    logger.info("Script này đã chuẩn bị dữ liệu embedding ('custom_embedding') bên trong mỗi detection của trường '%s'.", target_detections_field)
+    logger.info("Các hàm `cluster_face_embeddings` và `cluster_patches_with_brain` (Bước 3 tùy chọn bên dưới) sử dụng `fob.compute_visualization` ")
+    logger.info("với tham số `patches_field='%s'`, cách này đã xử lý đúng các embedding lồng nhau cho việc phân cụm bằng code.", target_detections_field)
+    logger.info("Tuy nhiên, nếu bạn muốn sử dụng Clustering Plugin trực tiếp từ UI của FiftyOne App:")
+    logger.info("  1. Mở dataset '%s' trong FiftyOne App.", dataset_name)
+    logger.info("  2. Tạo một 'patches view' từ các detections:")
+    logger.info("     - Trên thanh Stages (thường ở góc trên bên phải), nhấn nút 'Add stage'.")
+    logger.info("     - Chọn stage 'ToPatches'.")
+    logger.info("     - Trong cấu hình của stage 'ToPatches', đặt giá trị cho 'patches_field' là '%s'.", target_detections_field)
+    logger.info("     - Nhấn 'Apply' hoặc tương đương để tạo view mới chỉ chứa các patches (detections).")
+    logger.info("  3. Sau khi view các patch được hiển thị, mở Clustering Plugin từ menu Operators (biểu tượng tia chớp).")
+    logger.info("  4. Trong Clustering Plugin:")
+    logger.info("     - Đặt 'Embeddings Field' thành 'custom_embedding'.")
+    logger.info("     - Cấu hình các trường khác như 'Run key', 'Cluster field', 'Method' theo ý muốn.")
+    logger.info("     - Chạy plugin. Lúc này, plugin sẽ hoạt động trên từng patch (detection) và sử dụng trường 'custom_embedding' của patch đó.")
+    logger.info("Cách này sẽ giải quyết lỗi `ValueError` liên quan đến việc plugin không tìm thấy embedding field ở cấp cao nhất của sample.")
+    logger.info("--- Kết thúc hướng dẫn ---")
+    
+    logger.info("Script hoàn tất các bước chuẩn bị và xác minh. Hãy kiểm tra log để biết chi tiết về các vấn đề (nếu có).")
 
-    # Bước 3 (Tùy chọn từ script cũ): Chạy clustering bằng compute_visualization từ script
-    # Nếu bạn muốn sử dụng clustering plugin từ UI, bạn có thể không cần chạy bước này từ script.
-    # logger.info("--- Bước 3 (Tùy chọn): Chạy compute_visualization (có thể bao gồm clustering) ---")
-    # cluster_face_embeddings(dataset, 
-    #                         patches_field=target_detections_field, 
-    #                         embedding_attr_on_detection="custom_embedding", 
-    #                         brain_key="dlib_character_clusters_script_v2") # Sử dụng brain_key mới
-    # logger.info("[✓] Quá trình compute_visualization (và clustering tiềm năng) từ script đã hoàn tất!")
-    # logger.info("Khởi chạy FiftyOne App để khám phá kết quả nếu bạn chạy Bước 3.")
+    
 

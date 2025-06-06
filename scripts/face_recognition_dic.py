@@ -5,7 +5,6 @@ import os
 import gc
 import fiftyone as fo
 from fiftyone import ViewField as F
-import fiftyone.core.labels as fol
 
 class DlibFaceRecognizer:
     def __init__(self, use_cnn=True):
@@ -168,7 +167,7 @@ def process_frames_with_dlib():
     print(f"Đã load dataset '{frames_dataset_name}' với {len(frames_dataset)} frames")
     
     # Tạo dataset mới cho khuôn mặt
-    face_dataset_name = "video_dataset_faces_dlib_test_2"
+    face_dataset_name = "video_dataset_faces_dlib_test_2video"
     if fo.dataset_exists(face_dataset_name):
         fo.delete_dataset(face_dataset_name)
     face_dataset = fo.Dataset(face_dataset_name)
@@ -218,48 +217,36 @@ def process_frames_with_dlib():
                 # Phát hiện khuôn mặt
                 faces = face_recognizer.detect_faces(image)
                 
-                # Thay vì list các dict, chúng ta sẽ tạo list các Detection objects
-                current_sample_dlib_detections = []
-                
-                for face_data in faces:
-                    rect_to_process = face_data
-                    confidence_val = 1.0 # Mặc định
-
-                    if isinstance(face_data, tuple) and len(face_data) == 2: # Giả sử face_data là (rect, confidence)
-                        rect_to_process = face_data[0]
-                        confidence_val = face_data[1]
-
-                    embedding = face_recognizer.get_embedding(image, rect_to_process)
-                    relative_bbox = rect_to_relative_bbox(rect_to_process, image.shape)
-
-                    dlib_face_detection = fol.Detection(
-                        label="dlib_face_cnn" if isinstance(face_data, tuple) else "dlib_face_hog",
-                        bounding_box=relative_bbox,
-                        confidence=float(confidence_val) # Đảm bảo là float
-                    )
-                    dlib_face_detection.custom_dlib_embedding = embedding.tolist()
-                    current_sample_dlib_detections.append(dlib_face_detection)
+                face_embeddings = []
+                for face in faces:
+                    # Trích xuất embedding
+                    embedding = face_recognizer.get_embedding(image, face)
+                    
+                    # Tạo bounding box
+                    bbox = rect_to_relative_bbox(face, image.shape)
+                    
+                    # Thêm vào danh sách
+                    face_embeddings.append({
+                        "embedding": embedding.tolist(),
+                        "bbox": bbox,
+                        "confidence": 1.0  # dlib không trả về confidence
+                    })
                     total_faces += 1
                 
-                # Lưu thông tin khuôn mặt vào sample dưới dạng Detections
-                if current_sample_dlib_detections:
-                    # Tạo một đối tượng Detections (số nhiều) để chứa list các Detection
-                    sample["face_embeddings"] = fol.Detections(detections=current_sample_dlib_detections)
-                    
+                # Lưu thông tin khuôn mặt vào sample
+                if face_embeddings:
+                    sample["face_embeddings"] = face_embeddings
                     sample.save()
                     
                     # Thêm vào dataset khuôn mặt
-                    face_dataset.add_sample(sample.copy())
+                    face_dataset.add_sample(sample)
                 
                 # Giải phóng bộ nhớ
                 del image
-                if 'current_sample_dlib_detections' in locals(): del current_sample_dlib_detections
                 gc.collect()
                 
             except Exception as e:
                 print(f"Lỗi khi xử lý frame {sample.filepath}: {str(e)}")
-                import traceback
-                print(traceback.format_exc())
         
         # Thống kê thời gian cho batch này
         batch_time = time.time() - batch_start

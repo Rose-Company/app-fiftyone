@@ -5,7 +5,7 @@ import os
 import datetime
 import gc
 
-def remove_duplicate_frames(dataset_name="video_dataset_frames", backup=True, method="filepath"):
+def remove_duplicate_frames(dataset_name="video_dataset_faces_dic", backup=True, method="filepath"):
     """
     Xóa các frames trùng lặp trong dataset, chỉ giữ lại một frame duy nhất
     
@@ -139,7 +139,7 @@ def remove_duplicate_frames(dataset_name="video_dataset_frames", backup=True, me
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Xóa frames trùng lặp từ dataset")
-    parser.add_argument("--dataset", default="video_dataset_frames", help="Tên dataset cần xử lý")
+    parser.add_argument("--dataset", default="video_dataset_faces_dic", help="Tên dataset cần xử lý")
     parser.add_argument("--no-backup", action="store_true", help="Không tạo bản sao lưu trước khi xóa")
     parser.add_argument("--method", choices=["filepath", "video_frame", "all"], default="all", 
                         help="Phương pháp xác định trùng lặp: 'filepath', 'video_frame', hoặc 'all'")

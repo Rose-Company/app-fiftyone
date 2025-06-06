@@ -5,7 +5,6 @@ import fiftyone as fo
 from fiftyone import ViewField as F
 import gc
 import os
-import fiftyone.core.labels as fol
 
 def extract_face_from_bbox(image, bbox):
     """
@@ -69,7 +68,7 @@ def extract_faces_from_frames():
     print(f"Đã load dataset '{frames_dataset_name}' với {len(frames_dataset)} frames")
     
     # Tạo dataset mới cho khuôn mặt nếu chưa tồn tại
-    face_dataset_name = "video_dataset_faces_test"
+    face_dataset_name = "video_dataset_faces_dic"
     if fo.dataset_exists(face_dataset_name):
         face_dataset = fo.load_dataset(face_dataset_name)
         print(f"Dataset '{face_dataset_name}' đã tồn tại với {len(face_dataset)} samples")
@@ -114,72 +113,70 @@ def extract_faces_from_frames():
         batch_view = frames_dataset.select(batch_ids)
         
         for sample in batch_view:
+            # Đọc ảnh từ disk
             try:
                 image = cv2.imread(sample.filepath)
+                
                 if image is None:
                     print(f"Không thể đọc ảnh từ {sample.filepath}")
                     continue
                 
+                # Chuyển từ BGR sang RGB
                 image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                 
-                # Thay vì list các dict, chúng ta sẽ tạo list các Detection objects
-                current_sample_detections = [] # Đổi tên để rõ ràng hơn
+                # Nếu có person detections thì sử dụng nó, nếu không tìm mặt trực tiếp
+                face_embeddings = []
                 
                 if sample.has_field("person_detections") and len(sample.person_detections.detections) > 0:
+                    # Xử lý từ person detections
                     detections = sample.person_detections.detections
-                    for det_idx, det in enumerate(detections):
+                    
+                    for det in detections:
                         if det.label == "person":
+                            # Trích xuất vùng khuôn mặt
                             person_crop = extract_face_from_bbox(image_rgb, det.bounding_box)
+                            
                             if person_crop is None or person_crop.size == 0:
                                 continue
                             
-                            embedding = get_face_embedding(person_crop, model="cnn") 
+                            # Tìm và trích xuất khuôn mặt từ vùng người
+                            embedding = get_face_embedding(person_crop, model="cnn")  # Sử dụng HOG cho tốc độ
                             
                             if embedding is not None:
-                                # Tạo một Detection object
-                                face_detection = fol.Detection(
-                                    label="face_from_person", # Hoặc một label phù hợp
-                                    bounding_box=det.bounding_box, # bbox của person detection
-                                    confidence=det.confidence # confidence của person detection
-                                )
-                                # Thêm embedding như một thuộc tính tùy chỉnh
-                                face_detection.custom_embedding = embedding.tolist() 
-                                # Bạn có thể thêm các thuộc tính khác nếu muốn
-                                # face_detection.original_person_detection_id = det.id 
-
-                                current_sample_detections.append(face_detection)
+                                face_embeddings.append({
+                                    "embedding": embedding.tolist(),
+                                    "bounding_box": det.bounding_box,
+                                    "confidence": det.confidence
+                                })
                                 total_faces += 1
                 else:
-                    face_locations = face_recognition.face_locations(image_rgb, model="hog")
+                    # Tìm khuôn mặt trực tiếp trên toàn bộ ảnh
+                    face_locations = face_recognition.face_locations(image_rgb, model="cnn")
                     if face_locations:
                         face_encodings = face_recognition.face_encodings(image_rgb, face_locations)
                         
-                        for i_enc, (encoding, location) in enumerate(zip(face_encodings, face_locations)):
+                        for i, (encoding, location) in enumerate(zip(face_encodings, face_locations)):
+                            # Chuyển face_location thành bounding box [x, y, w, h]
                             top, right, bottom, left = location
-                            img_height, img_width = image_rgb.shape[:2]
+                            height, width = image.shape[:2]
                             
-                            x = left / img_width
-                            y = top / img_height
-                            w = (right - left) / img_width
-                            h = (bottom - top) / img_height
+                            x = left / width
+                            y = top / height
+                            w = (right - left) / width
+                            h = (bottom - top) / height
                             
-                            # Tạo một Detection object
-                            direct_face_detection = fol.Detection(
-                                label="direct_face", # Hoặc một label phù hợp
-                                bounding_box=[x, y, w, h],
-                                confidence=0.9 # Default confidence cho direct detection
-                            )
-                            # Thêm embedding như một thuộc tính tùy chỉnh
-                            direct_face_detection.custom_embedding = encoding.tolist()
-                            current_sample_detections.append(direct_face_detection)
+                            face_embeddings.append({
+                                "embedding": encoding.tolist(),
+                                "bounding_box": [x, y, w, h],
+                                "confidence": 0.9  # Default confidence
+                            })
                             total_faces += 1
                 
-                # Lưu thông tin khuôn mặt vào frame dưới dạng Detections
-                if current_sample_detections:
-                    # Tạo một đối tượng Detections (số nhiều) để chứa list các Detection
-                    sample["extracted_face_detections"] = fol.Detections(detections=current_sample_detections)
-                    # Đặt tên trường là "extracted_face_detections" hoặc một tên khác phù hợp
+                # Lưu thông tin khuôn mặt vào frame
+                if face_embeddings:
+                    sample["face_embeddings"] = face_embeddings
                     
+                    # Đảm bảo thông tin video_id được lưu
                     if not sample.has_field("video_id") and hasattr(sample.metadata, "source_video_path"):
                         video_path = sample.metadata.source_video_path
                         video_name = os.path.basename(video_path)
@@ -190,21 +187,17 @@ def extract_faces_from_frames():
                     processed_frames += 1
                     
                     # Thêm vào dataset khuôn mặt nếu chưa có
-                    # Sample giờ đã có trường "extracted_face_detections" đúng chuẩn
                     if sample.id not in face_dataset_ids:
-                        face_dataset.add_sample(sample.copy()) # Thêm một bản copy
+                        face_dataset.add_sample(sample)
                         face_dataset_ids.add(sample.id)
                 
                 # Giải phóng bộ nhớ
                 del image
                 del image_rgb
-                if 'current_sample_detections' in locals(): del current_sample_detections
                 gc.collect()
                 
             except Exception as e:
                 print(f"Lỗi khi xử lý frame {sample.id}: {str(e)}")
-                import traceback
-                print(traceback.format_exc())
                 continue
         
         # Giải phóng bộ nhớ sau mỗi batch

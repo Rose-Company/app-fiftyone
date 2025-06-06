@@ -15,9 +15,9 @@ services:
       - FIFTYONE_DEFAULT_APP_ADDRESS=0.0.0.0
       - OMP_NUM_THREADS=1
       - PYTORCH_NUM_THREADS=1
-    shm_size: '2gb'
-    mem_limit: '8g'
-    mem_reservation: '4g'
+    mem_limit: '16g'
+    mem_reservation: '8g'
+    shm_size: '4gb'
     networks:
       - fiftyone-network
 

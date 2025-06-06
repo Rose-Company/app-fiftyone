@@ -101,7 +101,7 @@ def create_character_index():
         return False
     
     # Load the face dataset
-    face_dataset_name = "video_dataset_faces"
+    face_dataset_name = "video_dataset_faces_dlib_test"
     if not fo.dataset_exists(face_dataset_name):
         print(f"Face dataset '{face_dataset_name}' not found. Please extract faces first.")
         return False
