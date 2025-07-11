@@ -34,7 +34,7 @@ def extract_face_from_bbox(image, bbox):
     face_image = image[top:bottom, left:right]
     return face_image
 
-def get_face_embedding(face_image, model="hog"):
+def get_face_embedding(face_image, model="cnn"):
     """
     Trích xuất embedding từ ảnh khuôn mặt
     """
@@ -59,7 +59,7 @@ def extract_faces_from_frames():
     fo.config.database_uri = "mongodb://mongo:27017"
     
     # Load dataset frames
-    frames_dataset_name = "video_dataset_frames"
+    frames_dataset_name = "my_images_17/6"
     if not fo.dataset_exists(frames_dataset_name):
         print(f"Không tìm thấy dataset '{frames_dataset_name}'")
         return
@@ -68,7 +68,7 @@ def extract_faces_from_frames():
     print(f"Đã load dataset '{frames_dataset_name}' với {len(frames_dataset)} frames")
     
     # Tạo dataset mới cho khuôn mặt nếu chưa tồn tại
-    face_dataset_name = "video_dataset_faces_dic"
+    face_dataset_name = "video_dataset_faces_dic_cnn_17/6"
     if fo.dataset_exists(face_dataset_name):
         face_dataset = fo.load_dataset(face_dataset_name)
         print(f"Dataset '{face_dataset_name}' đã tồn tại với {len(face_dataset)} samples")
@@ -79,13 +79,10 @@ def extract_faces_from_frames():
     # Lấy danh sách ID mẫu trong face_dataset để kiểm tra
     face_dataset_ids = set(face_dataset.values("id"))
     
-    # Tìm các frames có người nhưng chưa có face_embeddings hoặc chưa nằm trong face_dataset
+    # Tìm các frames chưa có face_embeddings hoặc chưa nằm trong face_dataset
     query = (
-        F("person_detections").exists() & 
-        (
-            (~F("face_embeddings").exists()) |
-            (~F("id").is_in(list(face_dataset_ids)))
-        )
+        (~F("face_embeddings").exists()) |
+        (~F("id").is_in(list(face_dataset_ids)))
     )
     unprocessed_frames = frames_dataset.match(query)
     total_unprocessed = len(unprocessed_frames)
@@ -124,53 +121,29 @@ def extract_faces_from_frames():
                 # Chuyển từ BGR sang RGB
                 image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                 
-                # Nếu có person detections thì sử dụng nó, nếu không tìm mặt trực tiếp
+                # Tìm khuôn mặt trực tiếp trên toàn bộ ảnh
                 face_embeddings = []
+                face_locations = face_recognition.face_locations(image_rgb, model="cnn")  # Sử dụng HOG cho tốc độ
                 
-                if sample.has_field("person_detections") and len(sample.person_detections.detections) > 0:
-                    # Xử lý từ person detections
-                    detections = sample.person_detections.detections
+                if face_locations:
+                    face_encodings = face_recognition.face_encodings(image_rgb, face_locations)
                     
-                    for det in detections:
-                        if det.label == "person":
-                            # Trích xuất vùng khuôn mặt
-                            person_crop = extract_face_from_bbox(image_rgb, det.bounding_box)
-                            
-                            if person_crop is None or person_crop.size == 0:
-                                continue
-                            
-                            # Tìm và trích xuất khuôn mặt từ vùng người
-                            embedding = get_face_embedding(person_crop, model="cnn")  # Sử dụng HOG cho tốc độ
-                            
-                            if embedding is not None:
-                                face_embeddings.append({
-                                    "embedding": embedding.tolist(),
-                                    "bounding_box": det.bounding_box,
-                                    "confidence": det.confidence
-                                })
-                                total_faces += 1
-                else:
-                    # Tìm khuôn mặt trực tiếp trên toàn bộ ảnh
-                    face_locations = face_recognition.face_locations(image_rgb, model="cnn")
-                    if face_locations:
-                        face_encodings = face_recognition.face_encodings(image_rgb, face_locations)
+                    for i, (encoding, location) in enumerate(zip(face_encodings, face_locations)):
+                        # Chuyển face_location thành bounding box [x, y, w, h]
+                        top, right, bottom, left = location
+                        height, width = image.shape[:2]
                         
-                        for i, (encoding, location) in enumerate(zip(face_encodings, face_locations)):
-                            # Chuyển face_location thành bounding box [x, y, w, h]
-                            top, right, bottom, left = location
-                            height, width = image.shape[:2]
-                            
-                            x = left / width
-                            y = top / height
-                            w = (right - left) / width
-                            h = (bottom - top) / height
-                            
-                            face_embeddings.append({
-                                "embedding": encoding.tolist(),
-                                "bounding_box": [x, y, w, h],
-                                "confidence": 0.9  # Default confidence
-                            })
-                            total_faces += 1
+                        x = left / width
+                        y = top / height
+                        w = (right - left) / width
+                        h = (bottom - top) / height
+                        
+                        face_embeddings.append({
+                            "embedding": encoding.tolist(),
+                            "bounding_box": [x, y, w, h],
+                            "confidence": 0.9  # Default confidence
+                        })
+                        total_faces += 1
                 
                 # Lưu thông tin khuôn mặt vào frame
                 if face_embeddings:

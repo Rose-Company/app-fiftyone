@@ -6,7 +6,7 @@ import os
 fo.config.database_uri = "mongodb://mongo:27017"
 
 # Load dataset video đã tạo trước đó
-dataset_name = "video_dataset"
+dataset_name = "video_dataset_final"
 if not fo.dataset_exists(dataset_name):
     print(f"Không tìm thấy dataset '{dataset_name}'")
     exit(1)
@@ -58,11 +58,12 @@ else:
             # Lấy video_id từ đường dẫn
             video_path = sample.metadata.source_video_path
             video_name = os.path.basename(video_path)
-            video_id = os.path.splitext(video_name)[0]
+            video_id = os.path.splitext(video_name)[0]  # Bỏ extension (.mp4, .avi, etc.)
             
-            # Lưu video_id vào metadata
+            # Lưu video_id vào sample
             sample["video_id"] = video_id
             sample.save()
+            print(f"  Added video_id '{video_id}' to frame: {os.path.basename(sample.filepath)}")
     
     # Thêm frames mới vào dataset đã tồn tại
     frames_dataset.merge_samples(frames_view)
@@ -71,15 +72,66 @@ else:
     print(f"- Số lượng videos mới xử lý: {num_unprocessed}")
     print(f"- Số lượng frames mới đã trích xuất: {len(frames_view)}")
 
+# Kiểm tra và cập nhật video_id cho các frames hiện có (nếu thiếu)
+print(f"\nKiểm tra và cập nhật video_id cho các frames hiện có...")
+updated_count = 0
+
+for sample in frames_dataset:
+    # Kiểm tra xem sample đã có video_id chưa
+    if not sample.has_field("video_id") or sample.video_id is None:
+        if hasattr(sample.metadata, "source_video_path"):
+            # Lấy video_id từ source_video_path
+            video_path = sample.metadata.source_video_path
+            video_name = os.path.basename(video_path)
+            video_id = os.path.splitext(video_name)[0]
+            
+            sample["video_id"] = video_id
+            sample.save()
+            updated_count += 1
+        else:
+            # Nếu không có source_video_path, thử lấy từ đường dẫn file
+            filepath = sample.filepath
+            # Đường dẫn thường có dạng: /fiftyone/data/frames/video_name/frame.jpg
+            path_parts = filepath.split('/')
+            if "frames" in path_parts:
+                frames_index = path_parts.index("frames")
+                if frames_index + 1 < len(path_parts):
+                    video_id = path_parts[frames_index + 1]
+                    sample["video_id"] = video_id
+                    sample.save()
+                    updated_count += 1
+
+if updated_count > 0:
+    print(f"Đã cập nhật video_id cho {updated_count} frames")
+else:
+    print("Tất cả frames đã có video_id")
+
 # Hiển thị thông tin tổng hợp
 print(f"\nTổng hợp dataset frames '{frames_dataset_name}':")
 print(f"- Tổng số frames: {len(frames_dataset)}")
 
+# Hiển thị thống kê theo video_id
+video_id_stats = {}
+for sample in frames_dataset:
+    if sample.has_field("video_id") and sample.video_id:
+        video_id = sample.video_id
+        if video_id not in video_id_stats:
+            video_id_stats[video_id] = 0
+        video_id_stats[video_id] += 1
+
+if video_id_stats:
+    print(f"\nThống kê frames theo video_id:")
+    for video_id, count in sorted(video_id_stats.items()):
+        print(f"- {video_id}: {count} frames")
+
 # Hiển thị thông tin chi tiết về frames
+print(f"\nThông tin chi tiết một số frames:")
 for sample in frames_dataset.take(5):  # Chỉ hiển thị 5 frames đầu tiên để demo
     metadata = sample.metadata
     if metadata:
-        print(f"\nFrame từ video: {os.path.basename(sample.filepath)}")
+        print(f"\nFrame: {os.path.basename(sample.filepath)}")
+        if sample.has_field("video_id"):
+            print(f"- Video ID: {sample.video_id}")
         print(f"- Kích thước: {metadata.width}x{metadata.height}")
         if hasattr(sample, "frame_number"):
             print(f"- Frame số: {sample.frame_number}")

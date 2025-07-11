@@ -2,514 +2,316 @@ import numpy as np
 import fiftyone as fo
 import fiftyone.core.labels as fol
 from sklearn.preprocessing import normalize
-from sklearn.cluster import KMeans, AgglomerativeClustering
+from sklearn.cluster import DBSCAN, KMeans
 from sklearn.metrics import silhouette_score
 from scipy.spatial.distance import pdist, squareform
 import matplotlib.colors as mcolors
+from sklearn.neighbors import NearestNeighbors
 import json
 import os
 import gc
+import matplotlib.pyplot as plt
+from sklearn.cluster import AgglomerativeClustering
 
-def estimate_optimal_clusters(embeddings, max_clusters=10):
+# === CONFIG ===
+DATASET_NAME = "video_dataset_faces_deepface_arcface_retinaface_image_17/6"
+EMBEDDING_FIELD = "face_embeddings"
+OUTPUT_FIELD = "character_cluster"
+
+def optimize_clustering_parameters(embeddings_array, min_samples_range=[3, 5, 7], 
+                                 eps_range=np.arange(0.5, 1.2, 0.1)):
     """
-    Ước tính số lượng cụm tối ưu sử dụng nhiều phương pháp
+    Tự động tối ưu parameters cho DBSCAN với ưu tiên ít cụm hơn nhưng có ý nghĩa
+    
+    Parameters:
+    - embeddings_array: Mảng các embedding vectors
+    - min_samples_range: List các giá trị min_samples cần thử (tăng để tránh cụm nhỏ)
+    - eps_range: List các giá trị eps cần thử (tăng để merge cụm gần nhau)
+    
+    Returns:
+    - best_params: Dict chứa các tham số tối ưu
     """
-    embeddings_array = np.array(embeddings)
-    embeddings_array = normalize(embeddings_array)
+    print("Đang tối ưu hóa tham số clustering với ưu tiên ít cụm hơn...")
     
-    if len(embeddings_array) <= max_clusters:
-        print("Số lượng mẫu quá ít, giảm max_clusters...")
-        max_clusters = max(2, len(embeddings_array) // 2)
+    best_score = -1
+    best_params = {'min_samples': 3, 'eps': 0.4}
+    best_labels = None
+    best_n_clusters = 0
+    best_n_noise = 0
     
-    print(f"Đang đánh giá từ 2 đến {max_clusters} clusters...")
+    n_samples = len(embeddings_array)
     
-    # 1. Phương pháp Silhouette
-    range_n_clusters = range(2, max_clusters + 1)
-    silhouette_avg_list = []
+    # Điều chỉnh tham số dựa trên kích thước dataset với cân bằng tốt hơn
+    if n_samples < 50:
+        min_samples_range = [3, 4, 5]
+        # Bao gồm cả khoảng epsilon từ k-distance analysis
+        eps_range = np.concatenate([
+            np.arange(0.3, 0.5, 0.05),  # Epsilon nhỏ từ k-distance
+            np.arange(0.5, 1.0, 0.1)    # Epsilon lớn để merge
+        ])
+    elif n_samples < 100:
+        min_samples_range = [3, 5, 7]
+        eps_range = np.concatenate([
+            np.arange(0.25, 0.5, 0.05),
+            np.arange(0.5, 1.1, 0.1)
+        ])
+    else:
+        min_samples_range = [5, 7, 10]
+        eps_range = np.concatenate([
+            np.arange(0.2, 0.5, 0.05),
+            np.arange(0.5, 1.2, 0.1)
+        ])
+
+    total_combinations = len(min_samples_range) * len(eps_range)
+    current_combo = 0
+
+    # If the array is too large, use a subset for optimization
+    if len(embeddings_array) > 1000:
+        print(f"Dataset quá lớn ({len(embeddings_array)} mẫu). Sử dụng tập con 1000 mẫu để tối ưu hóa.")
+        indices = np.random.choice(len(embeddings_array), 1000, replace=False)
+        opt_embeddings = embeddings_array[indices]
+    else:
+        opt_embeddings = embeddings_array
+
+    results = []
     
-    for n_clusters in range_n_clusters:
-        clustering = AgglomerativeClustering(n_clusters=n_clusters).fit(embeddings_array)
-        labels = clustering.labels_
-        silhouette_avg = silhouette_score(embeddings_array, labels)
-        silhouette_avg_list.append(silhouette_avg)
-        print(f"  {n_clusters} clusters: Silhouette = {silhouette_avg:.4f}")
+    print(f"Thử các tham số với min_samples={min_samples_range}")
+    print(f"Epsilon range: {eps_range.min():.2f} - {eps_range.max():.2f} ({len(eps_range)} values)")
     
-    # Tìm điểm có silhouette cao nhất
-    optimal_clusters_silhouette = range_n_clusters[np.argmax(silhouette_avg_list)]
-    print(f"Số cụm tối ưu theo Silhouette: {optimal_clusters_silhouette}")
-    
-    # 2. Phương pháp Elbow dựa trên inertia
-    inertia_list = []
-    
-    for n_clusters in range_n_clusters:
-        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10).fit(embeddings_array)
-        inertia_list.append(kmeans.inertia_)
-    
-    # Tính đạo hàm của inertia để tìm điểm gãy
-    inertia_diffs = np.diff(inertia_list)
-    inertia_diffs2 = np.diff(inertia_diffs)
-    optimal_clusters_elbow = range_n_clusters[1 + np.argmax(inertia_diffs2)]
-    print(f"Số cụm tối ưu theo Elbow: {optimal_clusters_elbow}")
-    
-    # 3. Phương pháp phân tích khoảng cách trung bình giữa các cụm
-    distances = pdist(embeddings_array)
-    dist_matrix = squareform(distances)
-    
-    avg_dists = []
-    for n_clusters in range_n_clusters:
-        clustering = AgglomerativeClustering(n_clusters=n_clusters).fit(embeddings_array)
-        labels = clustering.labels_
+    for min_samples in min_samples_range:
+        for eps in eps_range:
+            current_combo += 1
+            if current_combo % 5 == 1:  # In ít hơn để tránh spam
+                print(f"Progress: {current_combo}/{total_combinations} - Testing min_samples={min_samples}, eps={eps:.3f}")
+            
+            cluster = DBSCAN(min_samples=min_samples, eps=eps, metric='euclidean')
+            labels = cluster.fit_predict(opt_embeddings)
+
+            # Đánh giá kết quả clustering
+            unique_labels = np.unique(labels)
+            n_clusters = len(unique_labels[unique_labels != -1])  # Không tính nhiễu (-1)
+            n_noise = list(labels).count(-1)
+            noise_ratio = n_noise / len(labels) * 100
+            
+            # Tính phân bố kích thước cụm
+            cluster_sizes = []
+            for label in unique_labels:
+                if label != -1:
+                    cluster_size = np.sum(labels == label)
+                    cluster_sizes.append(cluster_size)
+            
+            # Đánh giá chất lượng clustering với scoring mới
+            quality_score = 0
+            
+            # Ưu tiên số lượng cụm hợp lý (2-5 cụm)
+            if 2 <= n_clusters <= 3:
+                quality_score += 150  # Ưu tiên cao nhất cho 2-3 cụm
+            elif 4 <= n_clusters <= 5:
+                quality_score += 120
+            elif 6 <= n_clusters <= 8:
+                quality_score += 80
+            elif n_clusters == 1:
+                quality_score += 30  # Chấp nhận 1 cụm nhưng điểm thấp
+            else:
+                quality_score += 10
+            
+            # Ưu tiên tỉ lệ nhiễu hợp lý
+            if noise_ratio < 15:
+                quality_score += 50
+            elif noise_ratio < 25:
+                quality_score += 35
+            elif noise_ratio < 40:
+                quality_score += 20
+            else:
+                quality_score += 0
+            
+            # Ưu tiên phân bố cụm cân bằng
+            if len(cluster_sizes) > 1:
+                largest_cluster_ratio = max(cluster_sizes) / len(opt_embeddings) * 100
+                smallest_cluster_ratio = min(cluster_sizes) / len(opt_embeddings) * 100
+                
+                # Tính coefficient of variation để đánh giá độ cân bằng
+                if len(cluster_sizes) >= 2:
+                    cv = np.std(cluster_sizes) / np.mean(cluster_sizes)
+                    if cv < 0.5:  # Phân bố cân bằng
+                        quality_score += 40
+                    elif cv < 1.0:
+                        quality_score += 25
+                    else:
+                        quality_score += 10
+                
+                # Tránh cụm quá nhỏ
+                if smallest_cluster_ratio >= 5:  # Cụm nhỏ nhất >= 5% tổng
+                    quality_score += 30
+                elif smallest_cluster_ratio >= 2:
+                    quality_score += 15
+            
+            # Tính silhouette score nếu có ít nhất 2 cụm
+            silhouette = 0
+            if n_clusters >= 2 and noise_ratio < 70:
+                try:
+                    # Loại bỏ điểm nhiễu khi tính silhouette
+                    mask = labels != -1
+                    if np.sum(mask) > n_clusters:
+                        silhouette = silhouette_score(opt_embeddings[mask], labels[mask])
+                        quality_score += silhouette * 100  # Tăng trọng số silhouette
+                except Exception as e:
+                    pass
+            
+            # In thông tin chi tiết cho các kết quả tốt
+            if quality_score > 100 or n_clusters >= 2:
+                print(f"  → min_samples={min_samples}, eps={eps:.3f}: {n_clusters} cụm, {noise_ratio:.1f}% nhiễu, score={quality_score:.1f}")
+                if silhouette > 0:
+                    print(f"    Silhouette: {silhouette:.3f}")
+            
+            results.append({
+                'min_samples': min_samples,
+                'eps': eps,
+                'n_clusters': n_clusters,
+                'n_noise': n_noise,
+                'noise_ratio': noise_ratio,
+                'silhouette': silhouette,
+                'cluster_sizes': cluster_sizes,
+                'quality_score': quality_score
+            })
+            
+            # Cập nhật best parameters dựa trên quality_score
+            if quality_score > best_score:
+                best_score = quality_score
+                best_params = {'min_samples': min_samples, 'eps': eps}
+                best_labels = labels
+                best_n_clusters = n_clusters
+                best_n_noise = n_noise
+
+    # Nếu tất cả cấu hình chỉ cho 1 cụm, thử epsilon nhỏ hơn nữa
+    if best_n_clusters <= 1:
+        print("\nTất cả cấu hình chỉ cho 1 cụm. Thử epsilon nhỏ hơn để tạo nhiều cụm...")
+        small_eps_range = np.arange(0.1, 0.35, 0.02)
+        small_min_samples = [2, 3]
         
-        # Tính khoảng cách trung bình giữa các cụm
-        inter_cluster_dists = []
-        for i in range(n_clusters):
-            for j in range(i+1, n_clusters):
-                mask_i = labels == i
-                mask_j = labels == j
-                if np.sum(mask_i) > 0 and np.sum(mask_j) > 0:
-                    points_i = np.where(mask_i)[0]
-                    points_j = np.where(mask_j)[0]
+        for min_samples in small_min_samples:
+            for eps in small_eps_range:
+                cluster = DBSCAN(min_samples=min_samples, eps=eps, metric='euclidean')
+                labels = cluster.fit_predict(opt_embeddings)
+                
+                unique_labels = np.unique(labels)
+                n_clusters = len(unique_labels[unique_labels != -1])
+                n_noise = list(labels).count(-1)
+                noise_ratio = n_noise / len(labels) * 100
+                
+                if n_clusters >= 2:
+                    print(f"  Tìm thấy {n_clusters} cụm với min_samples={min_samples}, eps={eps:.3f}")
                     
-                    cluster_dists = []
-                    for pi in points_i:
-                        for pj in points_j:
-                            cluster_dists.append(dist_matrix[pi, pj])
+                    # Tính quality score cho cấu hình này
+                    quality_score = 100 if n_clusters <= 5 else 50
+                    if noise_ratio < 30:
+                        quality_score += 30
                     
-                    inter_cluster_dists.append(np.mean(cluster_dists))
-        
-        avg_dists.append(np.mean(inter_cluster_dists) if inter_cluster_dists else 0)
+                    if quality_score > best_score:
+                        best_score = quality_score
+                        best_params = {'min_samples': min_samples, 'eps': eps}
+                        best_n_clusters = n_clusters
+                        best_n_noise = n_noise
+                        print(f"    ✓ Cập nhật best params: score={quality_score:.1f}")
+                        break
+            if best_n_clusters >= 2:
+                break
     
-    # Tìm điểm có khoảng cách giữa các cụm lớn nhất
-    optimal_clusters_dist = range_n_clusters[np.argmax(avg_dists) if avg_dists else 0]
-    print(f"Số cụm tối ưu theo khoảng cách giữa các cụm: {optimal_clusters_dist}")
+    # Sort results by quality_score and display top 5
+    results.sort(key=lambda x: x['quality_score'], reverse=True)
+    print(f"\nTop 5 cấu hình tốt nhất:")
+    for i, result in enumerate(results[:5], 1):
+        print(f"{i}. min_samples={result['min_samples']}, eps={result['eps']:.3f}")
+        print(f"   → {result['n_clusters']} cụm, {result['n_noise']} nhiễu ({result['noise_ratio']:.1f}%)")
+        print(f"   → Điểm chất lượng: {result['quality_score']:.1f}")
+        if result['silhouette'] > 0:
+            print(f"   → Silhouette: {result['silhouette']:.3f}")
     
-    # Kết hợp các phương pháp (có thể điều chỉnh trọng số)
-    candidates = [optimal_clusters_silhouette, optimal_clusters_elbow, optimal_clusters_dist]
-    # Chọn số cụm xuất hiện nhiều nhất trong các phương pháp
-    from collections import Counter
-    optimal_n_clusters = Counter(candidates).most_common(1)[0][0]
+    print(f"\nTham số được chọn: min_samples={best_params['min_samples']}, eps={best_params['eps']:.3f}")
+    print(f"  → {best_n_clusters} cụm, {best_n_noise} điểm nhiễu ({best_n_noise/len(opt_embeddings)*100:.1f}%)")
     
-    print(f"\nSố nhân vật tối ưu: {optimal_n_clusters}")
-    return optimal_n_clusters
+    return best_params
 
-def cluster_faces_kmeans(face_embeddings, n_clusters):
-    """Nhóm khuôn mặt bằng K-means"""
-    if not face_embeddings:
-        print("Không có embedding nào để nhóm.")
-        return []
-
-    embeddings_array = np.array(face_embeddings)
-    print(f"Shape của embedding array: {embeddings_array.shape}")
+def get_optimal_eps(embeddings_array, min_samples=5, visualize=False):
+    """
+    Phương pháp k-distance để tìm epsilon tối ưu cho DBSCAN
     
-    # Chuẩn hóa embeddings
-    embeddings_array = normalize(embeddings_array)
+    Parameters:
+    - embeddings_array: Mảng các embedding vectors
+    - min_samples: Số mẫu tối thiểu trong cụm
+    - visualize: Có hiển thị biểu đồ k-distance không
     
-    # Cluster sử dụng K-means
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10).fit(embeddings_array)
+    Returns:
+    - eps_candidates: Danh sách các giá trị epsilon tiềm năng
+    """
+    print("Đang tìm giá trị epsilon tối ưu cho DBSCAN...")
     
-    labels = kmeans.labels_
-    
-    # In thông tin phân bố cụm
-    unique_labels, counts = np.unique(labels, return_counts=True)
-    print("Phân bố kích thước clusters:")
-    for label, count in zip(unique_labels, counts):
-        print(f"Cluster {label}: {count} samples")
-    
-    return labels
-
-def cluster_faces_hierarchical(face_embeddings, n_clusters):
-    """Nhóm khuôn mặt bằng Agglomerative Hierarchical Clustering"""
-    if not face_embeddings:
-        print("Không có embedding nào để nhóm.")
-        return []
-
-    embeddings_array = np.array(face_embeddings)
-    print(f"Shape của embedding array: {embeddings_array.shape}")
-    
-    # Chuẩn hóa embeddings
-    embeddings_array = normalize(embeddings_array)
-    
-    # Cluster sử dụng AHC
-    clustering = AgglomerativeClustering(n_clusters=n_clusters).fit(embeddings_array)
-    
-    labels = clustering.labels_
-    
-    # In thông tin phân bố cụm
-    unique_labels, counts = np.unique(labels, return_counts=True)
-    print("Phân bố kích thước clusters:")
-    for label, count in zip(unique_labels, counts):
-        print(f"Cluster {label}: {count} samples")
-    
-    return labels
-
-def cluster_faces_dbscan(face_embeddings, eps=None, min_samples=5):
-    """Nhóm khuôn mặt bằng DBSCAN - Phiên bản cải tiến"""
-    from sklearn.cluster import DBSCAN
-    
-    if not face_embeddings:
-        print("Không có embedding nào để nhóm.")
-        return []
-
-    embeddings_array = np.array(face_embeddings)
-    print(f"Shape của embedding array: {embeddings_array.shape}")
-    
-    # Chuẩn hóa embeddings
-    embeddings_array = normalize(embeddings_array)
-    
-    # Tìm giá trị epsilon tối ưu
-    if eps is None:
-        from sklearn.neighbors import NearestNeighbors
-        # Sử dụng khoảng cách cosine thay vì Euclidean
-        nbrs = NearestNeighbors(n_neighbors=min(20, len(embeddings_array)-1), metric='cosine')
+    # Sử dụng khoảng cách Euclidean
+    nbrs = NearestNeighbors(n_neighbors=min(20, len(embeddings_array)-1), metric='euclidean')
         nbrs.fit(embeddings_array)
         distances, _ = nbrs.kneighbors(embeddings_array)
         
         # Sắp xếp khoảng cách đến láng giềng thứ k
-        k_distances = np.sort(distances[:, -1])
-        
-        # Thử nhiều giá trị epsilon khác nhau
-        eps_candidates = [
-            np.percentile(k_distances, 10),  # Rất chặt - nhiều cụm nhỏ
-            np.percentile(k_distances, 20),  # Chặt
-            np.percentile(k_distances, 30),  # Trung bình thấp
-            np.percentile(k_distances, 50),  # Trung bình
-        ]
-        
-        best_eps = None
-        best_n_clusters = 0
-        best_labels = None
-        best_score = -1
-        
-        print("Thử nghiệm các giá trị epsilon khác nhau:")
-        for candidate_eps in eps_candidates:
-            # Chạy DBSCAN với epsilon ứng viên
-            temp_dbscan = DBSCAN(eps=candidate_eps, min_samples=min_samples, metric='cosine')
-            temp_labels = temp_dbscan.fit_predict(embeddings_array)
-            
-            # Đếm số lượng cụm (không tính nhiễu)
-            temp_n_clusters = len(set(temp_labels)) - (1 if -1 in temp_labels else 0)
-            temp_n_noise = list(temp_labels).count(-1)
-            temp_noise_ratio = temp_n_noise / len(temp_labels) * 100
-            
-            print(f"  Với epsilon={candidate_eps:.4f}: {temp_n_clusters} cụm, {temp_n_noise} điểm nhiễu ({temp_noise_ratio:.1f}%)")
-            
-            # Tính silhouette score nếu có nhiều hơn 1 cụm và không quá nhiều nhiễu
-            if temp_n_clusters > 1 and temp_noise_ratio < 50:
-                # Loại bỏ điểm nhiễu khi tính silhouette
-                mask = temp_labels != -1
-                if np.sum(mask) > temp_n_clusters:
-                    from sklearn.metrics import silhouette_score
-                    try:
-                        score = silhouette_score(embeddings_array[mask], temp_labels[mask], metric='cosine')
-                        print(f"    Silhouette score: {score:.4f}")
-                        
-                        # Cập nhật nếu đây là kết quả tốt nhất
-                        if score > best_score:
-                            best_score = score
-                            best_eps = candidate_eps
-                            best_n_clusters = temp_n_clusters
-                            best_labels = temp_labels
-                    except:
-                        pass
-            
-            # Nếu chưa có kết quả tốt và đây là kết quả đầu tiên với nhiều hơn 1 cụm
-            if best_eps is None and temp_n_clusters > 1 and temp_noise_ratio < 70:
-                best_eps = candidate_eps
-                best_n_clusters = temp_n_clusters
-                best_labels = temp_labels
-        
-        # Nếu tìm được epsilon phù hợp
-        if best_eps is not None:
-            eps = best_eps
-            print(f"Chọn epsilon = {eps:.4f} với {best_n_clusters} cụm")
-            # Sử dụng kết quả đã tính toán
-            labels = best_labels
-            
-            # Kiểm tra số lượng cụm và điểm nhiễu
-            n_clusters = best_n_clusters
-            n_noise = list(labels).count(-1)
-            print(f"DBSCAN tìm thấy {n_clusters} cụm và {n_noise} điểm nhiễu ({n_noise/len(labels)*100:.1f}%)")
-            
-            # In thông tin phân bố cụm
-            unique_labels, counts = np.unique(labels, return_counts=True)
-            print("Phân bố kích thước clusters:")
-            for label, count in zip(unique_labels, counts):
-                if label == -1:
-                    print(f"Noise: {count} samples")
-                else:
-                    print(f"Cluster {label}: {count} samples")
-        else:
-            # Nếu không tìm được epsilon tốt, thử giá trị nhỏ hơn
-            eps = np.percentile(k_distances, 5)
-            print(f"Không tìm thấy epsilon tốt, thử nghiệm với giá trị nhỏ: {eps:.4f}")
-            
-            # Chạy DBSCAN với epsilon nhỏ
-            dbscan = DBSCAN(eps=eps, min_samples=2, metric='cosine')
-            labels = dbscan.fit_predict(embeddings_array)
-    else:
-        # Nếu eps được cung cấp, sử dụng nó
-        dbscan = DBSCAN(eps=eps, min_samples=min_samples, metric='cosine')
-        labels = dbscan.fit_predict(embeddings_array)
-        
-        # Kiểm tra số lượng cụm và điểm nhiễu
-        n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-        n_noise = list(labels).count(-1)
-        print(f"DBSCAN tìm thấy {n_clusters} cụm và {n_noise} điểm nhiễu ({n_noise/len(labels)*100:.1f}%)")
-        
-        # In thông tin phân bố cụm
-        unique_labels, counts = np.unique(labels, return_counts=True)
-        print("Phân bố kích thước clusters:")
-        for label, count in zip(unique_labels, counts):
-            if label == -1:
-                print(f"Noise: {count} samples")
-            else:
-                print(f"Cluster {label}: {count} samples")
+    distances = np.sort(distances, axis=0)
+    k_distances = distances[:, -1]
     
-    # Xử lý điểm nhiễu (gán vào cụm gần nhất)
-    if -1 in labels:
-        print("\nĐang gán lại các điểm nhiễu vào cụm gần nhất...")
-        noise_indices = np.where(labels == -1)[0]
-        valid_indices = np.where(labels != -1)[0]
-        
-        # Nếu tất cả đều là nhiễu, tạo một cụm mới
-        if len(valid_indices) == 0:
-            print("Tất cả các điểm đều là nhiễu, tạo một cụm duy nhất")
-            labels = np.zeros(len(labels), dtype=int)
-        else:
-            # Tính khoảng cách từ mỗi điểm nhiễu đến các tâm cụm
-            from scipy.spatial.distance import cdist
-            
-            # Tính tọa độ tâm của mỗi cụm
-            cluster_centers = {}
-            for label_id in set(labels):
-                if label_id != -1:
-                    mask = labels == label_id
-                    cluster_centers[label_id] = np.mean(embeddings_array[mask], axis=0)
-            
-            # Gán mỗi điểm nhiễu vào cụm gần nhất
-            for idx in noise_indices:
-                noise_point = embeddings_array[idx].reshape(1, -1)
-                min_dist = float('inf')
-                closest_cluster = 0
-                
-                for label_id, center in cluster_centers.items():
-                    dist = cdist(noise_point, center.reshape(1, -1), metric='cosine')
-                    if dist < min_dist:
-                        min_dist = dist
-                        closest_cluster = label_id
-                
-                labels[idx] = closest_cluster
-        
-        # In thông tin sau khi gán lại
-        unique_labels, counts = np.unique(labels, return_counts=True)
-        print("Phân bố sau khi gán điểm nhiễu:")
-        for label, count in zip(unique_labels, counts):
-            print(f"Cluster {label}: {count} samples")
+    # Tính các phân vị khác nhau để làm ứng viên epsilon
+    # Thêm nhiều phân vị thấp hơn để bắt buộc nhiều cụm hơn
+    percentiles = [1, 3, 5, 7, 10, 15, 20, 30, 40, 50, 60, 70]
+    eps_candidates = [np.percentile(k_distances, p) for p in percentiles]
     
-    return labels
+    print("Các ứng viên epsilon (dựa trên phân vị):")
+    for p, eps in zip(percentiles, eps_candidates):
+        print(f"  Phân vị {p}%: eps = {eps:.4f}")
+    
+    # Tìm điểm gãy trên đồ thị k-distance
+    if visualize:
+        plt.figure(figsize=(10, 6))
+        plt.plot(np.arange(len(k_distances)), np.sort(k_distances))
+        plt.xlabel('Điểm dữ liệu')
+        plt.ylabel('K-distance')
+        plt.title('K-distance Graph')
+        plt.grid(True)
+        plt.savefig("/fiftyone/data/k_distance_graph.png")
+        print("Đã lưu biểu đồ k-distance tại: /fiftyone/data/k_distance_graph.png")
+    
+    return eps_candidates
 
-def cluster_faces_hdbscan(face_embeddings, min_cluster_size=5, min_samples=None):
-    """Nhóm khuôn mặt bằng HDBSCAN"""
-    try:
-        import hdbscan
-    except ImportError:
-        print("Thư viện HDBSCAN không có sẵn. Cài đặt bằng: pip install hdbscan")
-        return np.zeros(len(face_embeddings), dtype=int)
-     
+def cluster_faces(face_embeddings):
+    """
+    Nhóm khuôn mặt sử dụng DBSCAN giống hệt như trong repo Face Clustering gốc:
+    - metric='euclidean'
+    - n_jobs=-1 (sử dụng tất cả CPU cores)
+    - Không có tham số eps và min_samples tùy chỉnh (sử dụng mặc định)
+    """
     if not face_embeddings:
         print("Không có embedding nào để nhóm.")
         return []
 
-    embeddings_array = np.array(face_embeddings)
-    print(f"Shape của embedding array: {embeddings_array.shape}")
-    
-    # Chuẩn hóa embeddings
-    embeddings_array = normalize(embeddings_array)
-    
-    # Thiết lập min_samples nếu không được cung cấp, make it more robust for small min_cluster_size
-    if min_samples is None:
-        if min_cluster_size <= 1: # Allow min_samples to be 1 if min_cluster_size is 1
-            min_samples = 1
-        elif min_cluster_size <= 3: # For small min_cluster_size (e.g. 2 or 3)
-            min_samples = max(1, min_cluster_size -1) # Try min_samples = 1 or 2
-        else: # Default logic for larger min_cluster_size
-            min_samples = max(2, min_cluster_size // 2) 
+    encodings = np.array(face_embeddings)
+    print(f"Shape của encoding array: {encodings.shape}")
 
-    print(f"HDBSCAN (Pass 1) với tham số: min_cluster_size={min_cluster_size}, min_samples={min_samples}, metric='euclidean', allow_single_cluster=True (EOM selection)")
+    print("[INFO] clustering...")
+    # Tạo DBSCAN object cho clustering encodings với metric "euclidean"
+    # Giống hệt như trong repo gốc
+    clt = DBSCAN(metric="euclidean", n_jobs=-1)
+    clt.fit(encodings)
     
-    # Cluster sử dụng HDBSCAN với tham số chính xác - PASS 1
-    clusterer_pass1 = hdbscan.HDBSCAN(
-        min_cluster_size=min_cluster_size,
-        min_samples=min_samples,
-        metric='euclidean',
-        allow_single_cluster=True, 
-        prediction_data=True # Keep for potential later use, though primary use is for fit_predict here
-    )
+    # Lấy labels từ clustering result
+    labels = clt.labels_
     
-    labels = clusterer_pass1.fit_predict(embeddings_array)
+    # Xác định tổng số unique faces được tìm thấy trong dataset
+    labelIDs = np.unique(labels)
+    numUniqueFaces = len(np.where(labelIDs > -1)[0])
+    print("[INFO] # unique faces: {}".format(numUniqueFaces))
     
-    n_clusters_pass1 = len(set(l for l in labels if l != -1))
-    n_noise_pass1 = list(labels).count(-1)
-    print(f"HDBSCAN (Pass 1) tìm thấy {n_clusters_pass1} cụm và {n_noise_pass1} điểm nhiễu ({n_noise_pass1/len(labels)*100:.1f}% nếu len > 0 else 0.0%)")
-
-    unique_labels_pass1, counts_pass1 = np.unique(labels, return_counts=True)
-    print("Phân bố kích thước clusters (Pass 1):")
-    for label, count in zip(unique_labels_pass1, counts_pass1):
-        if label == -1:
-            print(f"  Noise: {count} samples")
+    # In thông tin chi tiết về từng cluster
+    for labelID in labelIDs:
+        idxs = np.where(labels == labelID)[0]
+        if labelID == -1:
+            print("[INFO] outlier faces: {}".format(len(idxs)))
         else:
-            print(f"  Cluster {label}: {count} samples")
-
-    # --- Secondary Clustering on Noise from Pass 1 ---
-    MIN_POINTS_FOR_SECONDARY_CLUSTERING = max(5, min_cluster_size * 2) # Heuristic: at least e.g. 5-10 points
-    # Parameters for secondary clustering - should be more sensitive
-    min_cluster_size_secondary = max(2, min_cluster_size // 2 if min_cluster_size > 2 else 2) 
-    min_samples_secondary = max(1, min_cluster_size_secondary // 2 if min_cluster_size_secondary > 1 else 1)
-
-    if n_noise_pass1 >= MIN_POINTS_FOR_SECONDARY_CLUSTERING and n_clusters_pass1 > 0 : # Only run if there's substantial noise AND some initial clusters were found
-        print(f"\nHDBSCAN (Pass 2) - Chạy lại trên {n_noise_pass1} điểm nhiễu từ Pass 1.")
-        print(f"  Tham số Pass 2: min_cluster_size={min_cluster_size_secondary}, min_samples={min_samples_secondary}")
-        
-        noise_indices_pass1 = np.where(labels == -1)[0]
-        noise_embeddings_pass1 = embeddings_array[noise_indices_pass1]
-
-        clusterer_pass2 = hdbscan.HDBSCAN(
-            min_cluster_size=min_cluster_size_secondary,
-            min_samples=min_samples_secondary,
-            metric='euclidean',
-            allow_single_cluster=True 
-            # prediction_data for pass 2 might not be needed if we don't recurse noise further
-        )
-        labels_pass2_raw = clusterer_pass2.fit_predict(noise_embeddings_pass1)
-        
-        n_clusters_pass2 = len(set(l for l in labels_pass2_raw if l != -1))
-        n_noise_pass2 = list(labels_pass2_raw).count(-1)
-        print(f"HDBSCAN (Pass 2) tìm thấy {n_clusters_pass2} cụm mới và {n_noise_pass2} điểm nhiễu còn lại.")
-
-        if n_clusters_pass2 > 0:
-            # Re-index labels from pass 2 so they don't clash with pass 1 labels
-            max_label_pass1 = -1
-            if n_clusters_pass1 > 0: # Should be true due to condition above
-                 max_label_pass1 = np.max(labels[labels != -1])
-            
-            current_new_label_start = max_label_pass1 + 1
-            
-            # Create a mapping for pass 2 labels
-            labels_pass2_remapped = np.copy(labels_pass2_raw)
-            unique_raw_pass2_labels = sorted(list(set(l for l in labels_pass2_raw if l != -1))) # Get unique cluster IDs from pass2
-            
-            map_pass2_to_final = {}
-            for raw_p2_label in unique_raw_pass2_labels:
-                map_pass2_to_final[raw_p2_label] = current_new_label_start
-                current_new_label_start += 1
-            
-            # Apply the mapping
-            for i in range(len(labels_pass2_raw)):
-                if labels_pass2_raw[i] != -1:
-                    labels_pass2_remapped[i] = map_pass2_to_final[labels_pass2_raw[i]]
-                else:
-                    labels_pass2_remapped[i] = -1 # Noise from pass 2 remains -1
-
-            # Update the main 'labels' array with results from pass 2
-            for i, original_noise_idx in enumerate(noise_indices_pass1):
-                labels[original_noise_idx] = labels_pass2_remapped[i]
-            
-            print("Phân bố kích thước clusters (Sau Pass 2 gộp vào):")
-            unique_labels_combined, counts_combined = np.unique(labels, return_counts=True)
-            for label, count in zip(unique_labels_combined, counts_combined):
-                if label == -1:
-                    print(f"  Noise (còn lại): {count} samples")
-                else:
-                    print(f"  Cluster {label}: {count} samples")
-        else:
-            print("Pass 2 không tìm thấy cụm mới nào trong nhiễu của Pass 1.")
-    elif n_clusters_pass1 == 0 and n_noise_pass1 > 0:
-        print("\nHDBSCAN (Pass 1) không tìm thấy cụm nào, tất cả là nhiễu. Sẽ được xử lý sau.")
-    
-    # At this point, 'labels' contains results from Pass 1 and potentially refined by Pass 2.
-    # 'n_clusters' should reflect the total number of unique nonnoise clusters found.
-    n_clusters = len(set(l for l in labels if l != -1))
-    
-    # Xử lý điểm nhiễu còn lại (sau Pass 1 và Pass 2) sử dụng approximate_predict hoặc cdist
-    # For simplicity now, let's skip approximate_predict as it was causing warnings and might not be ideal for multiple passes.
-    # We will directly go to cdist based reassignment for any remaining -1.
-    
-    if -1 in labels:
-        print("\nĐang gán lại các điểm nhiễu còn lại vào cụm gần nhất (dựa trên tâm cụm)...")
-        noise_indices_remaining = np.where(labels == -1)[0]
-        valid_indices = np.where(labels != -1)[0]
-        
-        if len(valid_indices) > 0 and len(noise_indices_remaining) > 0:
-            cluster_centers = {}
-            current_valid_cluster_ids = sorted(list(set(l for l in labels if l != -1))) # Get current valid cluster IDs
-            
-            for label_id in current_valid_cluster_ids:
-                mask = labels == label_id
-                if np.sum(mask) > 0: 
-                    cluster_centers[label_id] = np.mean(embeddings_array[mask], axis=0)
-            
-            if cluster_centers: 
-                from scipy.spatial.distance import cdist
-                for idx in noise_indices_remaining:
-                    noise_point = embeddings_array[idx].reshape(1, -1)
-                    distances = {
-                        cluster_id: cdist(noise_point, center.reshape(1, -1), metric='euclidean')[0][0]
-                        for cluster_id, center in cluster_centers.items()
-                    }
-                    if distances: 
-                        closest_cluster = min(distances, key=distances.get)
-                        labels[idx] = closest_cluster
-                    else: 
-                        # This case should ideally not be reached if cluster_centers is populated.
-                        # If for some reason it is, assign to the first valid cluster or 0.
-                        labels[idx] = current_valid_cluster_ids[0] if current_valid_cluster_ids else 0
-                
-                print("Phân bố sau khi gán nốt điểm nhiễu:")
-                unique_labels_final, counts_final = np.unique(labels, return_counts=True)
-                for label, count in zip(unique_labels_final, counts_final):
-                    print(f"  Cluster {label}: {count} samples")
-
-        elif len(valid_indices) == 0 and len(noise_indices_remaining) > 0 : # All points are still noise
-            print("Tất cả các điểm vẫn là nhiễu sau các bước, tạo một cụm duy nhất.")
-            labels = np.zeros(len(labels), dtype=int)
-            # n_clusters is updated below
-        
-    # Đảm bảo nhãn là các số nguyên liên tiếp từ 0
-    # Recalculate n_clusters based on the final state of labels before re-mapping
-    final_unique_non_noise_labels = sorted(list(set(l for l in labels if l != -1)))
-    
-    if not final_unique_non_noise_labels and np.all(labels == -1): # Handles case where all points ended up as noise
-        labels = np.zeros(len(labels), dtype=int) # Assign all to cluster 0
-        final_unique_non_noise_labels = [0]
-
-    elif not final_unique_non_noise_labels and np.all(labels != -1): # All points in some cluster(s), but list is empty (e.g. single cluster 0)
-         final_unique_non_noise_labels = sorted(list(set(labels)))
-
-
-    mapping = {old_label: new_label for new_label, old_label in enumerate(final_unique_non_noise_labels)}
-    
-    final_labels_mapped = np.array([mapping.get(label, -1) for label in labels]) # Map to new, noise becomes -1 temporarily if not in mapping
-                                                                               # then handle these -1s if any.
-    
-    # If any points were noise and not in final_unique_non_noise_labels, they'd be -1 from .get()
-    # This shouldn't happen if the above logic (assigning all remaining noise to a cluster or to 0) worked.
-    # But as a safeguard:
-    if -1 in final_labels_mapped:
-        # This implies some original -1 didn't get caught by reassignments and weren't in final_unique_non_noise_labels
-        # Assign them to the largest cluster or cluster 0
-        if final_unique_non_noise_labels: # If there were some valid clusters mapped
-            # Find largest cluster among the mapped ones
-            unique_mapped, counts_mapped = np.unique(final_labels_mapped[final_labels_mapped != -1], return_counts=True)
-            if len(unique_mapped) > 0:
-                largest_cluster_label = unique_mapped[np.argmax(counts_mapped)]
-                final_labels_mapped[final_labels_mapped == -1] = largest_cluster_label
-            else: # No valid clusters formed, everything was noise, map to 0
-                 final_labels_mapped[final_labels_mapped == -1] = 0
-        else: # No clusters formed at all, everything was noise, map all to 0
-            final_labels_mapped = np.zeros(len(labels), dtype=int)
-
-
-    labels = final_labels_mapped
+            print("[INFO] faces for face ID {}: {}".format(labelID, len(idxs)))
     
     return labels
 
@@ -519,7 +321,7 @@ def group_faces_into_characters():
     fo.config.database_uri = "mongodb://mongo:27017"
     
     # Load dataset khuôn mặt
-    face_dataset_name = "video_dataset_faces_dlib_test"
+    face_dataset_name = "video_dataset_faces_deepface_arcface_retinaface_image_17/6"
     if not fo.dataset_exists(face_dataset_name):
         print(f"Không tìm thấy dataset '{face_dataset_name}'")
         return
@@ -593,27 +395,14 @@ def group_faces_into_characters():
                         break
             
             if video_id is None or video_id not in videos_map:
-                print(f"Không xác định được video nguồn cho {sample.id} (filepath: {sample.filepath})")
-                # Nếu không xác định được video_id chính xác, tạo một ID dựa trên filepath
-                if hasattr(sample, "filepath"):
-                    parts = sample.filepath.split('/')
-                    potential_video_id = None
-                    for j, part in enumerate(parts):
-                        if part == "frames" and j < len(parts) - 1:
-                            potential_video_id = parts[j+1]
-                            break
-                    if potential_video_id:
-                        video_id = potential_video_id
-                        # Thêm video vào videos_map nếu cần
+                # Nếu là dataset ảnh, gán video_id mặc định
+                video_id = "image_dataset"
                         if video_id not in videos_map:
                             videos_map[video_id] = {
-                                "name": f"{video_id}.mp4",
+                        "name": "image_dataset",
                                 "id": video_id,
-                                "fps": 24  # Giá trị mặc định
+                        "fps": 1
                             }
-                
-                if video_id is None:
-                    continue
                 
             # Thêm frame vào danh sách của video tương ứng
             if video_id not in frames_by_video:
@@ -626,7 +415,7 @@ def group_faces_into_characters():
     # Lưu trữ kết quả phân nhóm nhân vật cho tất cả video
     all_character_segments = {}  # video_id -> character_id -> segments
     
-    # Xử lý từng video riêng biệt - đảm bảo thuật toán HDBSCAN áp dụng riêng cho từng video
+    # Xử lý từng video riêng biệt - đảm bảo thuật toán DBSCAN áp dụng riêng cho từng video
     for video_id, frame_ids in frames_by_video.items():
         print(f"\n{'='*50}")
         print(f"Xử lý video: {videos_map[video_id]['name']} với {len(frame_ids)} frames")
@@ -679,72 +468,12 @@ def group_faces_into_characters():
             print(f"Không có embedding nào để nhóm trong video {video_id}. Bỏ qua.")
             continue
         
-        # Tự động ước tính số nhân vật tối ưu cho video này
-        print(f"\nBước 1: Ước tính số nhân vật trong video {video_id}")
-        print("-" * 50)
-        n_clusters = estimate_optimal_clusters(all_embeddings)
-        
-        # Nhóm các khuôn mặt bằng HDBSCAN cho video này
-        print(f"\nBước 2: Nhóm các khuôn mặt trong video {video_id} bằng HDBSCAN")
+        # Nhóm các khuôn mặt bằng DBSCAN
+        print(f"\nBước 1: Phân cụm khuôn mặt trong video {video_id} bằng DBSCAN")
         print("-" * 50)
         
-        # Dynamic min_cluster_size adjustment - Further refinement
-        num_video_embeddings = len(all_embeddings)
-        if num_video_embeddings == 0: 
-            min_cluster_size_video = 1
-        elif num_video_embeddings < 10: 
-            min_cluster_size_video = max(1, num_video_embeddings // 3 if num_video_embeddings > 2 else 1) 
-        elif num_video_embeddings < 30: 
-            min_cluster_size_video = max(2, num_video_embeddings // 5)
-        elif num_video_embeddings < 80: # e.g., 30-79 embeddings (covers 75 from log)
-            # Let's be more aggressive here for smaller sets like 75.
-            # Old: max(2, num_video_embeddings // 10) -> for 75 was 7
-            min_cluster_size_video = max(2, num_video_embeddings // 20) # For 75 -> max(2,3) = 3. For 30 -> max(2,1) = 2.
-        elif num_video_embeddings < 200:
-            # Old: max(3, num_video_embeddings // 20)
-            min_cluster_size_video = max(3, num_video_embeddings // 25) # For 100 -> 4. For 199 -> 7
-        else: # For larger datasets
-            # Old: max(5, num_video_embeddings // 30)
-            min_cluster_size_video = max(5, num_video_embeddings // 40) # For 200 -> 5. For 400 -> 10
-        
-        if num_video_embeddings > 0 :
-            min_cluster_size_video = max(1, min_cluster_size_video)
-        else: 
-             min_cluster_size_video = 1
-
-        print(f"Sử dụng min_cluster_size động = {min_cluster_size_video} cho {num_video_embeddings} embeddings")
-        
-        try:
-            # Thử với tham số giống code cũ
-            labels = cluster_faces_hdbscan(
-                all_embeddings, 
-                min_cluster_size=min_cluster_size_video
-                # min_samples will be determined inside cluster_faces_hdbscan based on min_cluster_size_video
-            )
-            
-            # Nếu không tìm thấy cụm nào (hoặc chỉ 1 cụm nếu allow_single_cluster=False and it's all noise),
-            # và nhiều hơn 1 embedding (để tránh lỗi với KMeans)
-            # N_clusters from hdbscan includes noise as -1. So set(labels) might be {-1, 0, 1} for 2 clusters + noise.
-            # We want to check if hdbscan found *meaningful* clusters.
-            # len(set(l for l in labels if l != -1)) gives number of non-noise clusters.
-            num_meaningful_clusters_hdbscan = len(set(l for l in labels if l != -1))
-
-            if num_meaningful_clusters_hdbscan == 0 and len(all_embeddings) > n_clusters : # n_clusters is from estimate_optimal_clusters
-                print(f"HDBSCAN không tìm thấy cụm ý nghĩa (found {num_meaningful_clusters_hdbscan}). Thử với phương pháp dự phòng KMeans với {n_clusters} cụm...")
-                labels = cluster_faces_kmeans(all_embeddings, n_clusters)
-            elif num_meaningful_clusters_hdbscan == 1 and len(set(labels)) > 1 and len(all_embeddings) > n_clusters:
-                # This case means HDBSCAN might have found one cluster and some noise.
-                # If KMeans suggests more clusters, it might be better.
-                # Only switch if KMeans suggests more than 1 cluster.
-                if n_clusters > 1:
-                    print(f"HDBSCAN tìm thấy 1 cụm ý nghĩa nhưng KMeans đề xuất {n_clusters}. Thử KMeans.")
-                    labels = cluster_faces_kmeans(all_embeddings, n_clusters)
-                else:
-                    print(f"HDBSCAN tìm thấy 1 cụm ý nghĩa. Giữ kết quả từ HDBSCAN.")
-
-        except Exception as e:
-            print(f"Lỗi khi chạy HDBSCAN: {str(e)}. Sử dụng phương pháp KMeans thay thế...")
-            labels = cluster_faces_kmeans(all_embeddings, n_clusters)
+        # Phân cụm với DBSCAN - CẢI TIẾN: truyền số frames để tính mật độ
+        labels = cluster_faces(all_embeddings)
         
         # Tạo map character_id -> color
         colors = list(mcolors.TABLEAU_COLORS.values())
@@ -930,6 +659,451 @@ def frame_to_timestamp(frame_number, fps=24):
     hours, minutes = divmod(minutes, 60)
     return f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
 
+def get_optimal_eps_elbow(embeddings_array, min_samples=5, max_eps=1.5, n_points=20):
+    """
+    Sử dụng phương pháp Elbow để tìm epsilon tối ưu cho DBSCAN
+    
+    Parameters:
+    - embeddings_array: Mảng embedding vectors
+    - min_samples: Tham số min_samples cho DBSCAN
+    - max_eps: Giá trị epsilon tối đa để thử
+    - n_points: Số điểm epsilon để thử
+    
+    Returns:
+    - optimal_eps: Giá trị epsilon tối ưu
+    - eps_candidates: List các giá trị epsilon đã thử
+    - n_clusters_list: List số cụm tương ứng
+    """
+    print("Sử dụng phương pháp Elbow để tìm epsilon tối ưu cho DBSCAN...")
+    
+    # Tạo danh sách epsilon candidates
+    eps_candidates = np.linspace(0.1, max_eps, n_points)
+    n_clusters_list = []
+    noise_ratios = []
+    
+    print(f"Thử {n_points} giá trị epsilon từ 0.1 đến {max_eps}")
+    
+    for eps in eps_candidates:
+        # Chạy DBSCAN với epsilon hiện tại
+        dbscan = DBSCAN(eps=eps, min_samples=min_samples, metric='euclidean')
+        labels = dbscan.fit_predict(embeddings_array)
+        
+        # Tính số cụm và tỉ lệ nhiễu
+        n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+        n_noise = list(labels).count(-1)
+        noise_ratio = n_noise / len(labels) * 100
+        
+        n_clusters_list.append(n_clusters)
+        noise_ratios.append(noise_ratio)
+        
+        if eps % 0.2 < 0.1:  # In một số kết quả mẫu
+            print(f"  eps={eps:.2f}: {n_clusters} cụm, {noise_ratio:.1f}% nhiễu")
+    
+    # Tìm điểm elbow trong đường cong số cụm
+    # Elbow point là nơi tốc độ giảm số cụm chậm lại
+    
+    # Tính đạo hàm bậc nhất (rate of change)
+    cluster_changes = np.diff(n_clusters_list)
+    
+    # Tính đạo hàm bậc hai (curvature)
+    cluster_curvatures = np.diff(cluster_changes)
+    
+    # Tìm điểm có curvature lớn nhất (elbow point)
+    # Nhưng cần đảm bảo không phải là những epsilon quá nhỏ (quá nhiều cụm)
+    valid_indices = []
+    for i, (n_clusters, noise_ratio) in enumerate(zip(n_clusters_list, noise_ratios)):
+        # Chỉ xem xét những điểm có số cụm hợp lý và nhiễu không quá nhiều
+        if 1 <= n_clusters <= 10 and noise_ratio < 80:
+            valid_indices.append(i)
+    
+    if len(valid_indices) == 0:
+        print("Không tìm thấy epsilon phù hợp, sử dụng giá trị mặc định")
+        return 0.3, eps_candidates, n_clusters_list
+    
+    # Trong số các điểm hợp lệ, tìm điểm có số cụm trong khoảng lý tưởng
+    best_idx = valid_indices[0]
+    best_score = -1
+    
+    for idx in valid_indices:
+        n_clusters = n_clusters_list[idx]
+        noise_ratio = noise_ratios[idx]
+        eps = eps_candidates[idx]
+        
+        # Scoring: ưu tiên 2-5 cụm, nhiễu ít
+        score = 0
+        if 2 <= n_clusters <= 4:
+            score += 100
+        elif n_clusters == 5:
+            score += 80
+        elif n_clusters == 1:
+            score += 40
+        else:
+            score += 20
+            
+        # Bonus cho tỉ lệ nhiễu thấp
+        if noise_ratio < 20:
+            score += 50
+        elif noise_ratio < 40:
+            score += 30
+        elif noise_ratio < 60:
+            score += 15
+            
+        if score > best_score:
+            best_score = score
+            best_idx = idx
+    
+    optimal_eps = eps_candidates[best_idx]
+    optimal_clusters = n_clusters_list[best_idx]
+    optimal_noise = noise_ratios[best_idx]
+    
+    print(f"Elbow method chọn: eps={optimal_eps:.3f}")
+    print(f"  → {optimal_clusters} cụm, {optimal_noise:.1f}% nhiễu")
+    
+    return optimal_eps, eps_candidates, n_clusters_list
+
+def evaluate_clustering_with_silhouette(embeddings_array, labels):
+    """
+    Đánh giá chất lượng clustering bằng Silhouette score và các metrics khác
+    
+    Parameters:
+    - embeddings_array: Mảng embedding vectors  
+    - labels: Nhãn cụm
+    
+    Returns:
+    - evaluation_results: Dict chứa các metrics đánh giá
+    """
+    n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+    n_noise = list(labels).count(-1)
+    noise_ratio = n_noise / len(labels) * 100
+    
+    evaluation = {
+        'n_clusters': n_clusters,
+        'n_noise': n_noise, 
+        'noise_ratio': noise_ratio,
+        'silhouette_score': 0,
+        'cluster_balance': 0,
+        'overall_quality': 0
+    }
+    
+    # Tính Silhouette score nếu có ít nhất 2 cụm
+    if n_clusters >= 2:
+        try:
+            # Loại bỏ noise khi tính silhouette
+            mask = labels != -1
+            if np.sum(mask) > n_clusters:
+                silhouette = silhouette_score(embeddings_array[mask], labels[mask])
+                evaluation['silhouette_score'] = silhouette
+                print(f"Silhouette score: {silhouette:.4f}")
+        except Exception as e:
+            print(f"Không thể tính silhouette score: {e}")
+    
+    # Đánh giá độ cân bằng của các cụm
+    if n_clusters > 0:
+        cluster_sizes = []
+        unique_labels = np.unique(labels)
+        for label in unique_labels:
+            if label != -1:
+                cluster_size = np.sum(labels == label)
+                cluster_sizes.append(cluster_size)
+        
+        if len(cluster_sizes) > 1:
+            # Coefficient of variation để đánh giá độ cân bằng
+            cv = np.std(cluster_sizes) / np.mean(cluster_sizes)
+            balance_score = max(0, 1 - cv)  # CV thấp = cân bằng tốt
+            evaluation['cluster_balance'] = balance_score
+            print(f"Cluster balance (CV): {cv:.3f} → score: {balance_score:.3f}")
+    
+    # Tính overall quality score
+    quality = 0
+    
+    # Điểm cho số cụm hợp lý
+    if 2 <= n_clusters <= 4:
+        quality += 40
+    elif n_clusters == 5:
+        quality += 30
+    elif n_clusters == 1:
+        quality += 15
+    else:
+        quality += 5
+    
+    # Điểm cho silhouette score
+    quality += evaluation['silhouette_score'] * 30
+    
+    # Điểm cho cluster balance
+    quality += evaluation['cluster_balance'] * 15
+    
+    # Điểm cho tỉ lệ nhiễu thấp
+    if noise_ratio < 15:
+        quality += 15
+    elif noise_ratio < 30:
+        quality += 10
+    elif noise_ratio < 50:
+        quality += 5
+    
+    evaluation['overall_quality'] = quality
+    
+    print(f"Overall quality score: {quality:.1f}")
+    
+    return evaluation
+
+def fine_tune_dbscan_with_silhouette(embeddings_array, base_eps, base_min_samples):
+    """
+    Fine-tune tham số DBSCAN sử dụng Silhouette score
+    
+    Parameters:
+    - embeddings_array: Mảng embedding vectors
+    - base_eps: Epsilon cơ bản từ Elbow method
+    - base_min_samples: Min_samples cơ bản
+    
+    Returns:
+    - best_params: Dict chứa tham số tối ưu
+    - best_labels: Nhãn cụm tốt nhất
+    """
+    print("Fine-tuning DBSCAN parameters với Silhouette score...")
+    
+    # Tạo grid search quanh base parameters
+    eps_range = np.linspace(base_eps * 0.7, base_eps * 1.3, 5)
+    min_samples_range = [max(2, base_min_samples - 1), base_min_samples, base_min_samples + 1]
+    
+    best_score = -1
+    best_params = {'eps': base_eps, 'min_samples': base_min_samples}
+    best_labels = None
+    best_evaluation = None
+    
+    print(f"Grid search: eps [{eps_range.min():.3f} - {eps_range.max():.3f}], min_samples {min_samples_range}")
+    
+    for eps in eps_range:
+        for min_samples in min_samples_range:
+            # Chạy DBSCAN
+            dbscan = DBSCAN(eps=eps, min_samples=min_samples, metric='euclidean')
+            labels = dbscan.fit_predict(embeddings_array)
+            
+            # Đánh giá bằng metrics tổng hợp
+            evaluation = evaluate_clustering_with_silhouette(embeddings_array, labels)
+            
+            quality_score = evaluation['overall_quality']
+            
+            print(f"  eps={eps:.3f}, min_samples={min_samples}: quality={quality_score:.1f}")
+            
+            # Cập nhật best params nếu tốt hơn
+            if quality_score > best_score:
+                best_score = quality_score
+                best_params = {'eps': eps, 'min_samples': min_samples}
+                best_labels = labels.copy()
+                best_evaluation = evaluation
+                print(f"    ✓ New best: {best_params}")
+    
+    print(f"\nBest parameters after fine-tuning:")
+    print(f"  eps={best_params['eps']:.3f}, min_samples={best_params['min_samples']}")
+    print(f"  → {best_evaluation['n_clusters']} cụm, {best_evaluation['noise_ratio']:.1f}% nhiễu")
+    print(f"  → Silhouette: {best_evaluation['silhouette_score']:.3f}")
+    print(f"  → Overall quality: {best_evaluation['overall_quality']:.1f}")
+    
+    return best_params, best_labels
+
+def estimate_characters_by_distance_analysis(embeddings_array, max_clusters=8):
+    """
+    Ước tính số nhân vật bằng phân tích khoảng cách trung bình giữa các cụm
+    
+    Parameters:
+    - embeddings_array: Mảng embedding vectors đã chuẩn hóa
+    - max_clusters: Số cụm tối đa để thử
+    
+    Returns:
+    - estimated_characters: Số nhân vật ước tính
+    - distance_scores: Dict chứa điểm số cho mỗi số cụm
+    """
+    from sklearn.cluster import AgglomerativeClustering
+    from scipy.spatial.distance import pdist, squareform
+    
+    print("Ước tính số nhân vật bằng phân tích khoảng cách...")
+    
+    n_samples = len(embeddings_array)
+    if n_samples <= max_clusters:
+        max_clusters = max(2, n_samples // 2)
+    
+    # Tính ma trận khoảng cách
+    distances = pdist(embeddings_array, metric='euclidean')
+    dist_matrix = squareform(distances)
+    
+    distance_scores = {}
+    range_n_clusters = range(2, max_clusters + 1)
+    
+    for n_clusters in range_n_clusters:
+        # Sử dụng Agglomerative Clustering để phân cụm
+        clustering = AgglomerativeClustering(n_clusters=n_clusters)
+        labels = clustering.fit_predict(embeddings_array)
+        
+        # Tính khoảng cách trung bình TRONG các cụm (intra-cluster)
+        intra_cluster_dists = []
+        for cluster_id in range(n_clusters):
+            mask = labels == cluster_id
+            cluster_points = np.where(mask)[0]
+            
+            if len(cluster_points) > 1:
+                cluster_distances = []
+                for i in range(len(cluster_points)):
+                    for j in range(i + 1, len(cluster_points)):
+                        cluster_distances.append(dist_matrix[cluster_points[i], cluster_points[j]])
+                intra_cluster_dists.extend(cluster_distances)
+        
+        avg_intra_dist = np.mean(intra_cluster_dists) if intra_cluster_dists else 0
+        
+        # Tính khoảng cách trung bình GIỮA các cụm (inter-cluster)
+        inter_cluster_dists = []
+        for i in range(n_clusters):
+            for j in range(i + 1, n_clusters):
+                mask_i = labels == i
+                mask_j = labels == j
+                
+                points_i = np.where(mask_i)[0]
+                points_j = np.where(mask_j)[0]
+                
+                if len(points_i) > 0 and len(points_j) > 0:
+                    cluster_dists = []
+                    for pi in points_i:
+                        for pj in points_j:
+                            cluster_dists.append(dist_matrix[pi, pj])
+                    inter_cluster_dists.append(np.mean(cluster_dists))
+        
+        avg_inter_dist = np.mean(inter_cluster_dists) if inter_cluster_dists else 0
+        
+        # Tính separation ratio (tỉ lệ phân tách)
+        separation_ratio = avg_inter_dist / avg_intra_dist if avg_intra_dist > 0 else 0
+        
+        # Tính cluster compactness (độ chặt của cụm)
+        compactness = 1 / (1 + avg_intra_dist) if avg_intra_dist > 0 else 1
+        
+        # Tính điểm số tổng hợp
+        score = separation_ratio * compactness
+        
+        # Bonus cho số cụm hợp lý với video (2-4 cụm)
+        if 2 <= n_clusters <= 4:
+            score *= 1.5
+        elif n_clusters == 5:
+            score *= 1.2
+        
+        distance_scores[n_clusters] = score
+        
+        print(f"  {n_clusters} cụm: intra={avg_intra_dist:.3f}, inter={avg_inter_dist:.3f}, separation={separation_ratio:.3f}, score={score:.3f}")
+    
+    # Chọn số cụm có điểm score cao nhất
+    best_n_clusters = max(distance_scores.keys(), key=lambda k: distance_scores[k])
+    best_score = distance_scores[best_n_clusters]
+    
+    print(f"Ước tính số nhân vật dựa trên distance analysis: {best_n_clusters} (score: {best_score:.3f})")
+    
+    return best_n_clusters, distance_scores
+
+def calculate_optimal_min_samples(embeddings_array, estimated_characters, num_frames=None):
+    """
+    Tính min_samples tối ưu dựa trên số nhân vật ước tính và phân bố dữ liệu
+    
+    Parameters:
+    - embeddings_array: Mảng embedding vectors
+    - estimated_characters: Số nhân vật ước tính
+    - num_frames: Số frames (optional)
+    
+    Returns:
+    - optimal_min_samples: Giá trị min_samples tối ưu
+    """
+    n_embeddings = len(embeddings_array)
+    
+    print(f"Tính min_samples cho {estimated_characters} nhân vật ước tính...")
+    
+    # Logic 1: Dựa trên số mẫu trung bình mỗi nhân vật
+    avg_samples_per_character = n_embeddings / estimated_characters
+    print(f"Trung bình mẫu/nhân vật: {avg_samples_per_character:.1f}")
+    
+    # Logic 2: min_samples nên là tỉ lệ nhỏ của mẫu mỗi nhân vật
+    # Để đảm bảo không bỏ sót nhân vật có ít appearance
+    if avg_samples_per_character >= 20:
+        # Nhiều mẫu → có thể dùng min_samples cao hơn
+        min_samples_ratio = 0.15  # 15% số mẫu trung bình
+    elif avg_samples_per_character >= 10:
+        # Trung bình → dùng tỉ lệ vừa phải
+        min_samples_ratio = 0.20  # 20% số mẫu trung bình  
+    else:
+        # Ít mẫu → dùng tỉ lệ thấp hơn
+        min_samples_ratio = 0.30  # 30% số mẫu trung bình
+    
+    min_samples_from_ratio = max(2, int(avg_samples_per_character * min_samples_ratio))
+    
+    # Logic 3: Dựa trên mật độ dữ liệu tổng quát
+    if n_embeddings < 30:
+        min_samples_base = 2
+    elif n_embeddings < 60:
+        min_samples_base = 3
+    elif n_embeddings < 100:
+        min_samples_base = 4
+    else:
+        min_samples_base = 5
+    
+    # Logic 4: Xem xét số frames nếu có
+    min_samples_frame_based = min_samples_base
+    if num_frames is not None and num_frames > 0:
+        faces_per_frame = n_embeddings / num_frames
+        if faces_per_frame > 3:
+            # Mật độ cao → có thể tăng min_samples
+            min_samples_frame_based = min_samples_base + 1
+        elif faces_per_frame < 1.5:
+            # Mật độ thấp → giảm min_samples
+            min_samples_frame_based = max(2, min_samples_base - 1)
+    
+    # Kết hợp các logic
+    candidates = [min_samples_from_ratio, min_samples_base, min_samples_frame_based]
+    
+    # Chọn giá trị median để tránh extreme
+    optimal_min_samples = int(np.median(candidates))
+    
+    # Giới hạn trong khoảng hợp lý
+    optimal_min_samples = max(2, min(optimal_min_samples, int(avg_samples_per_character * 0.4)))
+    
+    print(f"Min_samples candidates: ratio={min_samples_from_ratio}, base={min_samples_base}, frame={min_samples_frame_based}")
+    print(f"Min_samples tối ưu: {optimal_min_samples}")
+    
+    return optimal_min_samples
+
+def main():
+    fo.config.database_uri = "mongodb://mongo:27017"
+    if not fo.dataset_exists(DATASET_NAME):
+        print(f"Không tìm thấy dataset '{DATASET_NAME}'")
+        return
+    dataset = fo.load_dataset(DATASET_NAME)
+    print(f"Đã load dataset '{DATASET_NAME}' với {len(dataset)} samples")
+
+    # Thu thập toàn bộ embedding và mapping sample
+    print("[INFO] loading encodings...")
+    all_embeddings = []
+    sample_map = []  # (sample_id, index_in_sample)
+    for sample in dataset:
+        if hasattr(sample, EMBEDDING_FIELD) and getattr(sample, EMBEDDING_FIELD):
+            for idx, fe in enumerate(getattr(sample, EMBEDDING_FIELD)):
+                if "embedding" in fe:
+                    all_embeddings.append(fe["embedding"])
+                    sample_map.append((sample.id, idx))
+
+    if not all_embeddings:
+        print("Không có embedding nào để clustering.")
+        return
+
+    print(f"Tổng số embeddings: {len(all_embeddings)}")
+
+    # Clustering sử dụng phương pháp giống hệt repo Face Clustering gốc
+    labels = cluster_faces(all_embeddings)
+
+    # Gán nhãn cluster vào sample
+    print("[INFO] updating dataset with cluster labels...")
+    for (sample_id, idx), label in zip(sample_map, labels):
+        sample = dataset[sample_id]
+        fe_list = getattr(sample, EMBEDDING_FIELD)
+        if idx < len(fe_list):
+            fe_list[idx][OUTPUT_FIELD] = int(label)
+        sample[EMBEDDING_FIELD] = fe_list
+        sample.save()
+    
+    print(f"Đã gán nhãn cluster vào trường '{OUTPUT_FIELD}' cho từng face embedding.")
+    print("Clustering hoàn tất!")
+
 if __name__ == "__main__":
-    print("Phân tích tự động số lượng nhân vật...")
-    group_faces_into_characters()
+    main()

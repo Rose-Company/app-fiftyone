@@ -54,36 +54,95 @@ def extract_video_name_from_filepath(filepath):
     # Nếu không thể xác định từ đường dẫn
     return os.path.basename(filepath)
 
-def group_consecutive_frames(frame_numbers, max_gap=24):
+def merge_close_segments(segments, merge_threshold_seconds=2):
+    """
+    Merge segments that are very close to each other
+    
+    Args:
+        segments: List of segment dictionaries with start_frame, end_frame, etc.
+        merge_threshold_seconds: Maximum gap in seconds to merge segments
+    
+    Returns:
+        List of merged segments
+    """
+    if len(segments) <= 1:
+        return segments
+    
+    # Sort by start_frame
+    sorted_segments = sorted(segments, key=lambda x: x["start_frame"])
+    
+    merged = []
+    current = sorted_segments[0].copy()
+    
+    for i in range(1, len(sorted_segments)):
+        next_segment = sorted_segments[i]
+        
+        # Assume 24 fps for gap calculation
+        gap_frames = next_segment["start_frame"] - current["end_frame"]
+        gap_seconds = gap_frames / 24.0
+        
+        if gap_seconds <= merge_threshold_seconds:
+            # Merge segments
+            current["end_frame"] = next_segment["end_frame"]
+            current["end_time"] = next_segment["end_time"]
+            current["duration"] = current["end_frame"] - current["start_frame"]
+            print(f"    Merged segments: gap was {gap_seconds:.1f}s")
+        else:
+            # Add current segment and start new one
+            merged.append(current)
+            current = next_segment.copy()
+    
+    # Add the last segment
+    merged.append(current)
+    
+    return merged
+
+def group_consecutive_frames(frame_numbers, max_gap=1):
     """
     Group consecutive frame numbers into scenes with improved gap handling
     
     Args:
         frame_numbers: List of frame numbers
         max_gap: Maximum gap between frames to consider them part of the same scene
-                 Default is 24 frames (approximately 1 second at 24-30fps)
+                 Default is 1 frame (truly consecutive)
     """
     if not frame_numbers:
         return []
     
-    # Sắp xếp các frame
-    sorted_frames = sorted(frame_numbers)
+    # Sắp xếp các frame và loại bỏ duplicates
+    sorted_frames = sorted(list(set(frame_numbers)))
     
-    # Gộp frames
+    if len(sorted_frames) == 1:
+        return [(sorted_frames[0], sorted_frames[0])]
+    
+    # Gộp frames với logic cải tiến
     groups = []
-    current_group = [sorted_frames[0]]
+    current_start = sorted_frames[0]
+    current_end = sorted_frames[0]
     
-    for frame in sorted_frames[1:]:
-        if frame <= current_group[-1] + max_gap:
-            current_group.append(frame)
+    for i in range(1, len(sorted_frames)):
+        current_frame = sorted_frames[i]
+        prev_frame = sorted_frames[i-1]
+        
+        # Nếu frame hiện tại gần với frame trước đó (trong khoảng max_gap)
+        if current_frame <= prev_frame + max_gap:
+            # Mở rộng nhóm hiện tại
+            current_end = current_frame
         else:
-            # Kết thúc nhóm hiện tại
-            groups.append((current_group[0], current_group[-1]))
-            current_group = [frame]
+            # Kết thúc nhóm hiện tại và bắt đầu nhóm mới
+            groups.append((current_start, current_end))
+            current_start = current_frame
+            current_end = current_frame
     
     # Thêm nhóm cuối cùng
-    if current_group:
-        groups.append((current_group[0], current_group[-1]))
+    groups.append((current_start, current_end))
+    
+    # Debug information
+    print(f"  Frame grouping: {len(sorted_frames)} frames → {len(groups)} groups")
+    if len(groups) <= 5:  # Only show details for small number of groups
+        for i, (start, end) in enumerate(groups):
+            duration_frames = end - start
+            print(f"    Group {i+1}: frames {start}-{end} (duration: {duration_frames} frames)")
     
     return groups
 
@@ -101,7 +160,7 @@ def create_character_index():
         return False
     
     # Load the face dataset
-    face_dataset_name = "video_dataset_faces_dlib_test"
+    face_dataset_name = "video_dataset_faces_deepface_arcface_retinaface_final"
     if not fo.dataset_exists(face_dataset_name):
         print(f"Face dataset '{face_dataset_name}' not found. Please extract faces first.")
         return False
@@ -175,8 +234,13 @@ def create_character_index():
     for character, videos in character_appearances.items():
         character_scenes[character] = {}
         for video_name, frames in videos.items():
-            # Dùng max_gap lớn hơn để gộp các frame cách nhau bởi khoảng thời gian ngắn
-            character_scenes[character][video_name] = group_consecutive_frames(frames, max_gap=24)
+            print(f"\nProcessing character '{character}' in video '{video_name}':")
+            print(f"  Found {len(frames)} frame appearances")
+            
+            # Sử dụng max_gap nhỏ hơn cho frames thực sự liên tiếp
+            # max_gap=1: chỉ gộp frames liên tiếp trực tiếp
+            # max_gap=5: cho phép gộp frames cách nhau 1-5 frames (khoảng 0.2 giây)
+            character_scenes[character][video_name] = group_consecutive_frames(frames, max_gap=5)
     
     # Create temporal detections for each video sample
     for video_sample in video_dataset:
@@ -233,7 +297,7 @@ def create_character_index():
                 character_name = f"{character} ({video_base_name})"
             
             # Thêm scenes vào character trong video này
-            character_index[video_name][character_name] = [
+            scenes_list = [
                 {
                     "start_frame": start_frame,
                     "end_frame": end_frame,
@@ -243,6 +307,13 @@ def create_character_index():
                 }
                 for start_frame, end_frame in scenes
             ]
+            
+            # Merge close segments to fix fragmented appearances
+            print(f"  Before merging: {len(scenes_list)} segments")
+            scenes_list = merge_close_segments(scenes_list, merge_threshold_seconds=3)
+            print(f"  After merging: {len(scenes_list)} segments")
+            
+            character_index[video_name][character_name] = scenes_list
     
     # Save the character index
     with open("/fiftyone/data/character_index.json", "w") as f:

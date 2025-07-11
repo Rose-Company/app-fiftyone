@@ -25,7 +25,7 @@ for video in video_files:
     print(f"- {os.path.basename(video)}")
 
 # Tên dataset
-dataset_name = "video_dataset"
+dataset_name = "video_dataset_final"
 
 # Load hoặc tạo dataset
 if fo.dataset_exists(dataset_name):

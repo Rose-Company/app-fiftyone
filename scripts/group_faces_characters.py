@@ -101,11 +101,15 @@ def estimate_optimal_clusters(embeddings, max_clusters=10):
     optimal_clusters_dist = range_n_clusters[np.argmax(avg_dists) if avg_dists else 0]
     print(f"Số cụm tối ưu theo khoảng cách giữa các cụm: {optimal_clusters_dist}")
     
-    # Kết hợp các phương pháp (có thể điều chỉnh trọng số)
-    candidates = [optimal_clusters_silhouette, optimal_clusters_elbow, optimal_clusters_dist]
-    # Chọn số cụm xuất hiện nhiều nhất trong các phương pháp
-    from collections import Counter
-    optimal_n_clusters = Counter(candidates).most_common(1)[0][0]
+    # CẢI TIẾN: Chỉ sử dụng phương pháp Distance
+    print(f"\nPhương pháp được chọn: Distance method")
+    print(f"Kết quả từ các phương pháp (chỉ tham khảo):")
+    print(f"  - Silhouette: {optimal_clusters_silhouette} cụm")
+    print(f"  - Elbow: {optimal_clusters_elbow} cụm") 
+    print(f"  - Distance: {optimal_clusters_dist} cụm ← SỬ DỤNG")
+    
+    # Chỉ sử dụng kết quả từ Distance method
+    optimal_n_clusters = optimal_clusters_dist
     
     print(f"\nSố nhân vật tối ưu: {optimal_n_clusters}")
     return optimal_n_clusters
@@ -123,7 +127,7 @@ def cluster_faces_kmeans(face_embeddings, n_clusters):
     embeddings_array = normalize(embeddings_array)
     
     # Cluster sử dụng K-means
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10).fit(embeddings_array)
+    kmeans = KMeans(n_clusters=n_clusters, random_state=52, n_init=20).fit(embeddings_array)
     
     labels = kmeans.labels_
     
@@ -326,7 +330,7 @@ def cluster_faces_dbscan(face_embeddings, eps=None, min_samples=5):
     
     return labels
 
-def cluster_faces_hdbscan(face_embeddings, min_cluster_size=5, min_samples=None, tuning_params=None):
+def cluster_faces_hdbscan( min_cluster_size=5, min_samples=None, tuning_params=None):
     """
     Nhóm khuôn mặt bằng HDBSCAN với logic 2 lần chạy (two-pass) và tham số có thể tinh chỉnh.
     Lần 1: Chạy trên toàn bộ dữ liệu.
@@ -457,9 +461,8 @@ def group_faces_into_characters():
     """Nhóm các khuôn mặt trong dataset thành các nhân vật theo từng video riêng biệt"""
     # Kết nối MongoDB
     fo.config.database_uri = "mongodb://mongo:27017"
-    
     # Load dataset khuôn mặt
-    face_dataset_name = "video_dataset_faces_dlib_test_2video"
+    face_dataset_name = "video_dataset_faces_deepface_arcface_retinaface_image_17/6_vid"
     if not fo.dataset_exists(face_dataset_name):
         print(f"Không tìm thấy dataset '{face_dataset_name}'")
         return
@@ -533,32 +536,17 @@ def group_faces_into_characters():
                         break
             
             if video_id is None or video_id not in videos_map:
-                print(f"Không xác định được video nguồn cho {sample.id} (filepath: {sample.filepath})")
-                # Nếu không xác định được video_id chính xác, tạo một ID dựa trên filepath
-                if hasattr(sample, "filepath"):
-                    parts = sample.filepath.split('/')
-                    potential_video_id = None
-                    for j, part in enumerate(parts):
-                        if part == "frames" and j < len(parts) - 1:
-                            potential_video_id = parts[j+1]
-                            break
-                    if potential_video_id:
-                        video_id = potential_video_id
-                        # Thêm video vào videos_map nếu cần
-                        if video_id not in videos_map:
-                            videos_map[video_id] = {
-                                "name": f"{video_id}.mp4",
-                                "id": video_id,
-                                "fps": 24  # Giá trị mặc định
-                            }
-                
-                if video_id is None:
-                    continue
-                
+                # Nếu là dataset ảnh, gán video_id mặc định
+                video_id = "image_dataset"
+                if video_id not in videos_map:
+                    videos_map[video_id] = {
+                        "name": "image_dataset",
+                        "id": video_id,
+                        "fps": 1
+                    }
             # Thêm frame vào danh sách của video tương ứng
             if video_id not in frames_by_video:
                 frames_by_video[video_id] = []
-                
             frames_by_video[video_id].append(sample.id)
     
     print(f"Tìm thấy {len(frames_by_video)} videos có frames với face embeddings")

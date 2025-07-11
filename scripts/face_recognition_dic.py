@@ -158,7 +158,7 @@ def process_frames_with_dlib():
     fo.config.database_name = "fiftyone"
     
     # Load dataset frames
-    frames_dataset_name = "video_dataset_frames"
+    frames_dataset_name = "my_images_17/6"
     if not fo.dataset_exists(frames_dataset_name):
         print(f"Không tìm thấy dataset '{frames_dataset_name}'")
         return
@@ -167,7 +167,7 @@ def process_frames_with_dlib():
     print(f"Đã load dataset '{frames_dataset_name}' với {len(frames_dataset)} frames")
     
     # Tạo dataset mới cho khuôn mặt
-    face_dataset_name = "video_dataset_faces_dlib_test_2video"
+    face_dataset_name = "video_dataset_faces_dlib_test_cnn_17/6"
     if fo.dataset_exists(face_dataset_name):
         fo.delete_dataset(face_dataset_name)
     face_dataset = fo.Dataset(face_dataset_name)
@@ -228,7 +228,7 @@ def process_frames_with_dlib():
                     # Thêm vào danh sách
                     face_embeddings.append({
                         "embedding": embedding.tolist(),
-                        "bbox": bbox,
+                        "bounding_box": bbox,
                         "confidence": 1.0  # dlib không trả về confidence
                     })
                     total_faces += 1
