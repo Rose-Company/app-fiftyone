@@ -31,17 +31,15 @@ COPY scripts/requirements.txt /app/requirements.txt
 # Cài đặt thư viện Python
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Cài đặt FiftyOne
-RUN pip install --no-cache-dir fiftyone
+# Cài đặt FiftyOne và tf-keras (cho DeepFace)
+RUN pip install --no-cache-dir fiftyone tf-keras
 
-# Cài đặt HDBSCAN
-RUN pip install --no-cache-dir hdbscan
 
 # Sao chép toàn bộ script vào container
 COPY scripts/ /app/scripts/
 
 # Biến môi trường (đã có trong compose nên không bắt buộc)
-ENV FIFTYONE_DATABASE_URI=mongodb://mongo:27017
-ENV FIFTYONE_DEFAULT_APP_ADDRESS=0.0.0.0
+#ENV FIFTYONE_DATABASE_URI=mongodb://mongo:27017
+#ENV FIFTYONE_DEFAULT_APP_ADDRESS=0.0.0.0
 
 # Lệnh mặc định (bỏ qua, dùng `command:` trong compose)

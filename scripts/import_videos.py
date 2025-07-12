@@ -1,11 +1,18 @@
 import fiftyone as fo
 import os
 
-# Cấu hình kết nối MongoDB trong container
-fo.config.database_uri = "mongodb://mongo:27017"
+# Cấu hình kết nối MongoDB từ biến môi trường
+database_uri = os.getenv("FIFTYONE_DATABASE_URI")
+if not database_uri:
+    print("Error: FIFTYONE_DATABASE_URI environment variable is required!")
+    exit(1)
+fo.config.database_uri = database_uri
 
-# Đường dẫn trong container (đã được mount)
-video_dir = "/fiftyone/data/videos"
+# Đường dẫn video từ biến môi trường
+video_dir = os.getenv("VIDEO_DIR")
+if not video_dir:
+    print("Error: VIDEO_DIR environment variable is required!")
+    exit(1)
 
 # Kiểm tra thư mục tồn tại
 if not os.path.exists(video_dir):
@@ -25,32 +32,54 @@ for video in video_files:
     print(f"- {os.path.basename(video)}")
 
 # Tên dataset
-dataset_name = "video_dataset"
+dataset_name = "video_dataset_final"
 
 # Load hoặc tạo dataset
 if fo.dataset_exists(dataset_name):
     print(f"\nĐang sử dụng dataset '{dataset_name}' đã tồn tại")
     dataset = fo.load_dataset(dataset_name)
-    # Xóa tất cả samples cũ (tùy chọn)
-    dataset.clear()
+    
+    # Lấy danh sách video đã tồn tại
+    existing_videos = set(dataset.values("filepath"))
+    print(f"Đã có {len(existing_videos)} videos trong dataset")
 else:
     print(f"\nTạo dataset mới '{dataset_name}'")
     dataset = fo.Dataset(dataset_name)
+    existing_videos = set()
 
-# Import videos
-samples = []
-for video_path in video_files:
-    sample = fo.Sample(filepath=video_path)
-    samples.append(sample)
+# Lọc các video mới chưa được import
+new_videos = [v for v in video_files if v not in existing_videos]
 
-# Thêm samples vào dataset
-dataset.add_samples(samples)
+if not new_videos:
+    print("\nKhông có video mới để import.")
+else:
+    print(f"\nImport {len(new_videos)} videos mới:")
+    for v in new_videos:
+        print(f"- {os.path.basename(v)}")
 
-# Tính toán metadata
-dataset.compute_metadata()
+    # Import videos mới
+    samples = []
+    for video_path in new_videos:
+        sample = fo.Sample(filepath=video_path)
+        samples.append(sample)
 
-print(f"\nĐã import thành công {len(dataset)} videos vào dataset '{dataset.name}'")
-print("Truy cập http://localhost:5151 để xem dataset")
+    # Thêm samples vào dataset
+    dataset.add_samples(samples)
+
+    # Tính toán metadata cho samples mới
+    for sample in samples:
+        sample.compute_metadata()
+        sample.save()
+
+    print(f"\nĐã import thành công {len(new_videos)} videos mới vào dataset '{dataset.name}'")
+
+print(f"Tổng số videos trong dataset: {len(dataset)}")
+# Lấy port từ biến môi trường
+fiftyone_port = os.getenv("FIFTYONE_PORT")
+if not fiftyone_port:
+    print("Error: FIFTYONE_PORT environment variable is required!")
+    exit(1)
+print(f"Truy cập http://localhost:{fiftyone_port} để xem dataset")
 
 # In danh sách tất cả datasets
 print("\nDanh sách tất cả datasets:")
