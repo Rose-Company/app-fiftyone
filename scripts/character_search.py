@@ -88,7 +88,7 @@ def merge_close_segments(segments, merge_threshold_seconds=2):
             current["end_frame"] = next_segment["end_frame"]
             current["end_time"] = next_segment["end_time"]
             current["duration"] = current["end_frame"] - current["start_frame"]
-            print(f"    Merged segments: gap was {gap_seconds:.1f}s")
+            #print(f"    Merged segments: gap was {gap_seconds:.1f}s")
         else:
             # Add current segment and start new one
             merged.append(current)
@@ -150,16 +150,25 @@ def group_consecutive_frames(frame_numbers, max_gap=1):
 
 def load_existing_character_index():
     """
-    Load existing character index if it exists
+    Load existing character index from individual video files
     """
-    index_path = "/fiftyone/data/character_index.json"
-    if os.path.exists(index_path):
-        try:
-            with open(index_path, "r") as f:
-                return json.load(f)
-        except:
-            print("Warning: Could not load existing character_index.json")
-    return {}
+    character_index = {}
+    data_dir = "/fiftyone/data"
+    
+    # Load all existing video JSON files
+    for filename in os.listdir(data_dir):
+        if filename.endswith('.json') and not filename.startswith('character_'):
+            # This is a video file (e.g., test1.json, test2.json)
+            video_name = filename.replace('.json', '.mp4')
+            file_path = os.path.join(data_dir, filename)
+            
+            try:
+                with open(file_path, "r") as f:
+                    character_index[video_name] = json.load(f)
+            except:
+                print(f"Warning: Could not load {filename}")
+    
+    return character_index
 
 def detect_changes(old_index, new_index):
     """
@@ -398,47 +407,54 @@ def create_character_index():
     if changes["removed_videos"]:
         print(f"- Removed videos: {changes['removed_videos']}")
     
-    # Save the updated character index
-    print("\nSaving updated character index...")
-    with open("/fiftyone/data/character_index.json", "w") as f:
-        json.dump(character_index, f, indent=2)
+    # Save individual video JSON files
+    print("\nSaving individual video JSON files...")
+    data_dir = "/fiftyone/data"
     
-    # Create character update file with only changed data
-    character_update = {}
-    
-    # Add new and updated videos to the update file
-    for video_name in changes["new_videos"] + changes["updated_videos"]:
-        if video_name in character_index:
-            character_update[video_name] = character_index[video_name]
-    
-    # Save the character update file
-    if character_update:
-        print("Creating character_update.json with changed data...")
+    # Save each video as a separate JSON file
+    for video_name, video_data in character_index.items():
+        # Convert video name to filename (e.g., test1.mp4 -> test1.json)
+        video_basename = os.path.splitext(video_name)[0]  # Remove .mp4
+        json_filename = f"{video_basename}.json"
+        json_path = os.path.join(data_dir, json_filename)
         
-        # Save with same structure as character_index.json for easy synchronization
-        with open("/fiftyone/data/character_update.json", "w") as f:
-            json.dump(character_update, f, indent=2)
+        with open(json_path, "w") as f:
+            json.dump(video_data, f, indent=2)
         
-        # Also save a metadata file for tracking changes
+        print(f"  Saved {json_filename}")
+    
+    # Create character update metadata file
+    changed_videos = changes["new_videos"] + changes["updated_videos"]
+    
+    if changed_videos:
+        print("\nCreating character_update_metadata.json...")
+        
+        # Save metadata file for tracking changes
         metadata = {
             "timestamp": datetime.now().isoformat(),
             "changes": changes,
-            "videos_count": len(character_update)
+            "videos_count": len(changed_videos),
+            "changed_files": [f"{os.path.splitext(v)[0]}.json" for v in changed_videos],
+            "total_videos": len(character_index)
         }
         
         with open("/fiftyone/data/character_update_metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
         
-        print(f"Character update file contains {len(character_update)} videos:")
-        for video_name, characters in character_update.items():
-            status = "NEW" if video_name in changes["new_videos"] else "UPDATED"
-            print(f"- {video_name} ({status}): {len(characters)} characters")
-            for character, scenes in characters.items():
-                print(f"  - {character}: {len(scenes)} appearances")
+        print(f"Character update metadata contains {len(changed_videos)} changed videos:")
+        for video_name in changed_videos:
+            if video_name in character_index:
+                status = "NEW" if video_name in changes["new_videos"] else "UPDATED"
+                characters = character_index[video_name]
+                json_filename = f"{os.path.splitext(video_name)[0]}.json"
+                print(f"- {json_filename} ({status}): {len(characters)} characters")
+                for character, scenes in characters.items():
+                    print(f"  - {character}: {len(scenes)} appearances")
     
     print(f"\nCharacter indexing complete:")
     print(f"- Total videos: {len(character_index)}")
-    print(f"- Changed videos: {len(character_update)}")
+    print(f"- Changed videos: {len(changed_videos) if changed_videos else 0}")
+    print(f"- Individual JSON files saved in /fiftyone/data/")
     
     return True
 
@@ -454,14 +470,12 @@ def search_characters(target_characters, excluded_characters=None, min_duration=
     Returns:
         Dictionary of matching scenes
     """
-    # Load character index
-    index_path = "/fiftyone/data/character_index.json"
-    if not os.path.exists(index_path):
-        print("Character index not found. Please create the character index first.")
-        return {}
+    # Load character index from individual video files
+    character_index = load_existing_character_index()
     
-    with open(index_path, "r") as f:
-        character_index = json.load(f)
+    if not character_index:
+        print("No character index files found. Please create the character index first.")
+        return {}
     
     # Initialize results
     matching_scenes = {}
@@ -539,13 +553,11 @@ def launch_character_search_app():
     video_dataset = fo.load_dataset("video_dataset_final")
     
     # Get characters from the index
-    index_path = "/fiftyone/data/character_index.json"
-    if not os.path.exists(index_path):
-        print("Character index not found. Please create the character index first.")
-        return
+    character_index = load_existing_character_index()
     
-    with open(index_path, "r") as f:
-        character_index = json.load(f)
+    if not character_index:
+        print("No character index files found. Please create the character index first.")
+        return
     
     characters = sorted(list(character_index.keys()))
     

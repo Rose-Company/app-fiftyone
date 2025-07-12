@@ -70,6 +70,7 @@ fiftyone-docker/
     ├── extract_faces_deepface.py # Phát hiện khuôn mặt
     ├── group_faces_graph.py      # Gom nhóm khuôn mặt
     ├── character_search.py       # Tìm kiếm nhân vật
+    ├── get_current_selection.py  # Quản lý patches trong FiftyOne UI
     ├── remove_frames_by_video_id.py # Xóa frames theo video
     └── test_env_vars.py          # Test cấu hình môi trường
 ```
@@ -119,6 +120,70 @@ docker exec -it fiftyone-docker-fiftyone-1 python /app/scripts/character_search.
 - Loại trừ nhân vật không mong muốn
 - Lọc theo thời gian xuất hiện
 - Kết quả được lưu trong `character_index.json`
+
+### Quản lý Character Patches
+
+Script `get_current_selection.py` cho phép quản lý patches nhân vật trực tiếp từ FiftyOne UI:
+
+#### 1. Xem patches được chọn
+```bash
+# Xem danh sách patches được chọn trong UI
+docker-compose exec fiftyone python /app/scripts/get_current_selection.py test11 get
+```
+
+#### 2. Thay đổi label patches được chọn trong UI
+```bash
+# Thay đổi label của patches được chọn trong UI
+# LưU Ý: Phải chọn patches trong FiftyOne UI trước khi chạy lệnh này
+docker-compose exec fiftyone python /app/scripts/get_current_selection.py test11 update label "test11_character_3"
+#Sẽ thay đổi patches được chọn thành :
+  #Label: 'test11_character_3'
+  #Character ID: '3'
+  #Video ID: 'test11'
+```
+
+#### 3. Merge characters (tính năng mới)
+```bash
+# Merge tất cả patches từ character 7 sang character 1 trong video test11
+# Lưu ý: Tính năng này TỰ ĐỘNG tìm tất cả patches, KHÔNG cần chọn trong UI
+docker-compose exec fiftyone python /app/scripts/get_current_selection.py test11 merge "test11_character_7" to "test11_character_1"
+```
+
+#### 4. Export detection IDs của patches được chọn
+```bash
+# Xuất danh sách detection IDs của patches được chọn trong UI
+# Lưu ý: Phải chọn patches trong FiftyOne UI trước khi chạy lệnh này
+docker-compose exec fiftyone python /app/scripts/get_current_selection.py test11 export
+
+# Xuất với tên file tùy chỉnh
+docker-compose exec fiftyone python /app/scripts/get_current_selection.py test11 export --output custom_patches.json
+```
+
+#### Cách sử dụng:
+
+**Cho lệnh `get`, `update`, `export` (cần chọn patches trước):**
+1. Mở FiftyOne UI tại http://localhost:5151
+2. Chọn dataset patches view và lọc theo video cần thiết
+3. **Chọn các patches cần xử lý trong UI** (bằng cách click chọn)
+4. Chạy lệnh tương ứng trong terminal
+5. Script sẽ tự động phát hiện selection và thực hiện hành động
+
+**Cho lệnh `merge` (tự động tìm patches):**
+1. Không cần chọn patches trong UI
+2. Chạy lệnh merge trực tiếp
+3. Script tự động tìm tất cả patches có label cần merge
+
+#### Tính năng nổi bật:
+- **Automatic Label Parsing**: Tự động parse "test11_character_3" thành character_id = "3"
+- **Video Filtering**: Chỉ làm việc với patches của video được chỉ định
+- **UI Integration**: Tích hợp với FiftyOne UI để chọn patches trực quan
+- **Batch Operations**: Xử lý hàng loạt patches cùng lúc
+- **Merge Characters**: Gộp tất cả patches từ character này sang character khác (tự động)
+- **Safety Confirmation**: Luôn hỏi xác nhận trước khi thay đổi dữ liệu
+
+#### Phân biệt 2 loại tính năng:
+- **Manual Selection** (`get`, `update`, `export`): Làm việc với patches **được chọn trong UI**
+- **Automatic Processing** (`merge`): Tự động tìm và xử lý **tất cả patches** có label khớp
 
 ### Quản lý Dữ liệu
 ```bash
