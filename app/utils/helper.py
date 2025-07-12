@@ -1,6 +1,7 @@
 import re
 from typing import Any, Dict
-from flask import jsonify, Response
+from fastapi import Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from app.utils.error import CustomError, AIError
 import json
@@ -29,7 +30,7 @@ def response_ok(
     data: Any = None, 
     message: str = "ok", 
     status: int = 200
-) -> Dict[Response, int]:
+) -> JSONResponse:
     try:
         logger.info(f"[response_ok] Input data: {data}, message: {message}, status: {status}")
         if isinstance(data, BaseModel):
@@ -42,17 +43,17 @@ def response_ok(
             "data": data
         }
         logger.info(f"[response_ok] Response to jsonify: {response}")
-        return jsonify(response), status
+        return JSONResponse(content=response, status_code=status)
     except Exception as e:
         logger.error(f"[response_ok] Serialization error: {e}\n{traceback.format_exc()}\nInput data: {data}")
-        return jsonify({"message": "Internal Server Error", "data": e}), 500
+        return JSONResponse(content={"message": "Internal Server Error", "data": str(e)}, status_code=500)
 
 
 
 def response_error(
     error: CustomError, 
     status: int = 500
-) -> Dict[str, Any]:
+) -> JSONResponse:
 
     status = error.status if hasattr(error, 'status') else 500
     response = {
@@ -60,12 +61,12 @@ def response_error(
         "message": str(error) if hasattr(error, 'message') else "Đã xảy ra lỗi",
         "internal": error.internal_message if hasattr(error, 'internal_message') else str(error)
     }
-    return jsonify(response), status
+    return JSONResponse(content=response, status_code=status)
 
 def ai_response_error(
     error: AIError, 
     status: int = 500
-) -> Dict[str, Any]:
+) -> JSONResponse:
 
     status = error.status if hasattr(error, 'status') else 500
     response = {
@@ -74,7 +75,7 @@ def ai_response_error(
         "internal": error.internal_message if hasattr(error, 'internal_message') else str(error),
         "ai_raw_response": error.ai_raw_response if hasattr(error, 'ai_raw_response') else None
     }
-    return jsonify(response), status
+    return JSONResponse(content=response, status_code=status)
 
 def format_error_message(
     internal_message: str, 

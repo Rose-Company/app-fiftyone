@@ -7,27 +7,27 @@ from uuid import UUID
 
 class CharacterAppearanceRepository(BaseRepository):
     def __init__(self, db: Session):
-        super().__init__(db, CharacterAppearance)
+        super().__init__(CharacterAppearance, db)
 
     def get_by_character_and_video(self, character_id: UUID, video_id: UUID) -> List[CharacterAppearance]:
-        return self.db.query(CharacterAppearance).filter(
+        return self.session.query(CharacterAppearance).filter(
             CharacterAppearance.character_id == character_id,
             CharacterAppearance.video_id == video_id
         ).all()
 
     def create(self, appearance_data: CharacterAppearanceCreate) -> CharacterAppearance:
         db_appearance = CharacterAppearance(**appearance_data.model_dump())
-        self.db.add(db_appearance)
-        self.db.commit()
-        self.db.refresh(db_appearance)
+        self.session.add(db_appearance)
+        self.session.commit()
+        self.session.refresh(db_appearance)
         return db_appearance
 
     def create_many(self, appearances_data: List[CharacterAppearanceCreate]) -> List[CharacterAppearance]:
         db_appearances = [CharacterAppearance(**data.model_dump()) for data in appearances_data]
-        self.db.add_all(db_appearances)
-        self.db.commit()
+        self.session.add_all(db_appearances)
+        self.session.commit()
         for appearance in db_appearances:
-            self.db.refresh(appearance)
+            self.session.refresh(appearance)
         return db_appearances
 
     def update(self, appearance_id: int, appearance_data: CharacterAppearanceUpdate) -> Optional[CharacterAppearance]:

@@ -7,16 +7,16 @@ from uuid import UUID
 
 class VideoRepository(BaseRepository):
     def __init__(self, db: Session):
-        super().__init__(db, Video)
+        super().__init__(Video, db)
 
     def get_by_video_code(self, video_code: str) -> Optional[Video]:
-        return self.db.query(Video).filter(Video.video_code == video_code).first()
+        return self.session.query(Video).filter(Video.video_code == video_code).first()
 
     def create(self, video_data: VideoCreate) -> Video:
         db_video = Video(**video_data.model_dump())
-        self.db.add(db_video)
-        self.db.commit()
-        self.db.refresh(db_video)
+        self.session.add(db_video)
+        self.session.commit()
+        self.session.refresh(db_video)
         return db_video
 
     def update(self, video_id: UUID, video_data: VideoUpdate) -> Optional[Video]:

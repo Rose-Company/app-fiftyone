@@ -7,22 +7,22 @@ from uuid import UUID
 
 class CharacterRepository(BaseRepository):
     def __init__(self, db: Session):
-        super().__init__(db, Character)
+        super().__init__(Character, db)
 
     def get_by_video_id_and_code(self, video_id: UUID, character_code: str) -> Optional[Character]:
-        return self.db.query(Character).filter(
+        return self.session.query(Character).filter(
             Character.video_id == video_id,
             Character.character_code == character_code
         ).first()
 
     def get_by_video_id(self, video_id: UUID) -> List[Character]:
-        return self.db.query(Character).filter(Character.video_id == video_id).all()
+        return self.session.query(Character).filter(Character.video_id == video_id).all()
 
     def create(self, character_data: CharacterCreate) -> Character:
         db_character = Character(**character_data.model_dump())
-        self.db.add(db_character)
-        self.db.commit()
-        self.db.refresh(db_character)
+        self.session.add(db_character)
+        self.session.commit()
+        self.session.refresh(db_character)
         return db_character
 
     def update(self, character_id: UUID, character_data: CharacterUpdate) -> Optional[Character]:
