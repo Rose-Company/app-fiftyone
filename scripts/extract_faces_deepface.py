@@ -21,8 +21,8 @@ FACE_DATASET_NAME = f"video_dataset_faces_deepface_{MODEL_NAME.lower()}_{DETECTO
 
 # Video IDs to process - specify which videos to test
 # Examples:
-VIDEO_IDS_TO_PROCESS = ["test2", "test3", "test4", "test5"]  # Process only these specific videos
-#VIDEO_IDS_TO_PROCESS = ["test1"]            # Process only one video
+#VIDEO_IDS_TO_PROCESS = ["test2", "test3", "test4", "test5"]  # Process only these specific videos
+VIDEO_IDS_TO_PROCESS = ["test11"]            # Process only one video
 # VIDEO_IDS_TO_PROCESS = None                  # Process all videos (default behavior)
 # VIDEO_IDS_TO_PROCESS = None  # Change this to specify which videos to process
 

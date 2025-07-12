@@ -8,8 +8,6 @@ services:
     volumes:
       - ./data:/fiftyone/data
       - ./scripts:/app/scripts
-      - ./learn-to-cluster:/app/learn-to-cluster
-      - ./data/dataset:/app/data/dataset
     restart: always
     command: fiftyone app launch --address 0.0.0.0 --port 5151
     environment:

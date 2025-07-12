@@ -17,18 +17,18 @@ FACE_DATASET_NAME = "video_dataset_faces_deepface_arcface_retinaface_final"
 # Video IDs to process - specify which videos to test
 # Examples:
 # VIDEO_IDS_TO_PROCESS = ["video1", "video2"]  # Process only these specific videos
-VIDEO_IDS_TO_PROCESS = ["test10"]            # Process only one video
+VIDEO_IDS_TO_PROCESS = ["test11"]            # Process only one video
 # VIDEO_IDS_TO_PROCESS = None                  # Process all videos (default behavior)
 #VIDEO_IDS_TO_PROCESS = None  # Change this to specify which videos to process
 
 # --- GRAPH CLUSTERING PARAMETERS ---
 # Number of nearest neighbors to consider for each face when building the graph.
 # A smaller value makes the graph sparser and clusters tighter.
-K_NEIGHBORS = 3
+K_NEIGHBORS = 50
 
 # Minimum cosine similarity for two faces to be connected by an edge.
 # This acts as a hard filter after finding the K-nearest neighbors.
-SIMILARITY_THRESHOLD = 0.45
+SIMILARITY_THRESHOLD = 0.46
 # Any cluster (community) with fewer members than this will be labeled 'unknown'.
 MIN_COMMUNITY_SIZE = 3
 # --- END CONFIGURATION ---

@@ -4,7 +4,7 @@ import os
 import numpy as np
 import json
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 import cv2
 import face_recognition
 
@@ -146,9 +146,69 @@ def group_consecutive_frames(frame_numbers, max_gap=1):
     
     return groups
 
+def load_existing_character_index():
+    """
+    Load existing character index if it exists
+    """
+    index_path = "/fiftyone/data/character_index.json"
+    if os.path.exists(index_path):
+        try:
+            with open(index_path, "r") as f:
+                return json.load(f)
+        except:
+            print("Warning: Could not load existing character_index.json")
+    return {}
+
+def detect_changes(old_index, new_index):
+    """
+    Detect what has changed between old and new character index
+    
+    Returns:
+        dict: Changes detected with structure:
+        {
+            "new_videos": [list of new video names],
+            "updated_videos": [list of updated video names],
+            "removed_videos": [list of removed video names],
+            "has_changes": bool
+        }
+    """
+    changes = {
+        "new_videos": [],
+        "updated_videos": [],
+        "removed_videos": [],
+        "has_changes": False
+    }
+    
+    # Find new videos
+    for video_name in new_index:
+        if video_name not in old_index:
+            changes["new_videos"].append(video_name)
+            changes["has_changes"] = True
+    
+    # Find removed videos
+    for video_name in old_index:
+        if video_name not in new_index:
+            changes["removed_videos"].append(video_name)
+            changes["has_changes"] = True
+    
+    # Find updated videos (same video but different characters/scenes)
+    for video_name in new_index:
+        if video_name in old_index:
+            # Compare character data
+            old_characters = old_index[video_name]
+            new_characters = new_index[video_name]
+            
+            # Check if character data is different
+            if old_characters != new_characters:
+                changes["updated_videos"].append(video_name)
+                changes["has_changes"] = True
+    
+    return changes
+
 def create_character_index():
     """
     Create a searchable index of characters with their appearances in videos
+    Only creates new files if there are changes detected
     """
     # Load the necessary datasets
     if not fo.dataset_exists("video_dataset"):
@@ -166,6 +226,10 @@ def create_character_index():
         return False
     
     face_dataset = fo.load_dataset(face_dataset_name)
+    
+    # Load existing character index for comparison
+    print("Loading existing character index for comparison...")
+    old_character_index = load_existing_character_index()
     
     # Get the original video dataset to create temporal annotations
     video_dataset = fo.load_dataset("video_dataset")
@@ -315,16 +379,64 @@ def create_character_index():
             
             character_index[video_name][character_name] = scenes_list
     
-    # Save the character index
+    # Detect changes compared to existing index
+    print("\nDetecting changes...")
+    changes = detect_changes(old_character_index, character_index)
+    
+    if not changes["has_changes"]:
+        print("No changes detected. Character index is up to date.")
+        return True
+    
+    # Display detected changes
+    print(f"\nChanges detected:")
+    if changes["new_videos"]:
+        print(f"- New videos: {changes['new_videos']}")
+    if changes["updated_videos"]:
+        print(f"- Updated videos: {changes['updated_videos']}")
+    if changes["removed_videos"]:
+        print(f"- Removed videos: {changes['removed_videos']}")
+    
+    # Save the updated character index
+    print("\nSaving updated character index...")
     with open("/fiftyone/data/character_index.json", "w") as f:
         json.dump(character_index, f, indent=2)
     
+    # Create character update file with only changed data
+    character_update = {}
+    
+    # Add new and updated videos to the update file
+    for video_name in changes["new_videos"] + changes["updated_videos"]:
+        if video_name in character_index:
+            character_update[video_name] = character_index[video_name]
+    
+    # Save the character update file
+    if character_update:
+        print("Creating character_update.json with changed data...")
+        
+        # Save with same structure as character_index.json for easy synchronization
+        with open("/fiftyone/data/character_update.json", "w") as f:
+            json.dump(character_update, f, indent=2)
+        
+        # Also save a metadata file for tracking changes
+        metadata = {
+            "timestamp": datetime.now().isoformat(),
+            "changes": changes,
+            "videos_count": len(character_update)
+        }
+        
+        with open("/fiftyone/data/character_update_metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+        
+        print(f"Character update file contains {len(character_update)} videos:")
+        for video_name, characters in character_update.items():
+            status = "NEW" if video_name in changes["new_videos"] else "UPDATED"
+            print(f"- {video_name} ({status}): {len(characters)} characters")
+            for character, scenes in characters.items():
+                print(f"  - {character}: {len(scenes)} appearances")
+    
     print(f"\nCharacter indexing complete:")
     print(f"- Total videos: {len(character_index)}")
-    for video_name, characters in character_index.items():
-        print(f"- {video_name}: {len(characters)} characters")
-        for character, scenes in characters.items():
-            print(f"  - {character}: {len(scenes)} appearances")
+    print(f"- Changed videos: {len(character_update)}")
     
     return True
 
