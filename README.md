@@ -152,7 +152,7 @@ docker exec -it fiftyone-docker-fiftyone-1 bash
 ### Cài đặt thêm thư viện
 ```bash
 # Cài đặt trong container đang chạy
-docker exec -it fiftyone-docker-fiftyone-1 pip install <package>
+docker exec -it fiftyone-docker-fiftyone-1 pip install deepface
 
 # Hoặc thêm vào Dockerfile và rebuild
 ```
