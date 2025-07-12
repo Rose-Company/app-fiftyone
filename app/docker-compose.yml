@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  migration-service:
+    build:
+      context: ..
+      dockerfile: app/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/result:/app/app/data/result
+      - ./.env:/app/.env
+    env_file:
+      - ./.env
+    environment:
+      - PYTHONPATH=/app
+    restart: unless-stopped
+    networks:
+      - migration-network
+
+networks:
+  migration-network:
+    driver: bridge
