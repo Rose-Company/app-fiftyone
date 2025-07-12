@@ -15,7 +15,11 @@ def remove_duplicate_frames(dataset_name="video_dataset_faces_dic", backup=True,
         method: Phương pháp xác định trùng lặp ("filepath", "video_frame", "all")
     """
     # Kết nối MongoDB
-    fo.config.database_uri = "mongodb://mongo:27017"
+    database_uri = os.getenv("FIFTYONE_DATABASE_URI")
+    if not database_uri:
+        print("Error: FIFTYONE_DATABASE_URI environment variable is required!")
+        exit(1)
+    fo.config.database_uri = database_uri
     
     # Kiểm tra dataset tồn tại
     if not fo.dataset_exists(dataset_name):

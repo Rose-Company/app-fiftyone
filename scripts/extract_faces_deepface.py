@@ -47,7 +47,11 @@ def process_frames_with_deepface():
         return
 
     # Connect to MongoDB
-    fo.config.database_uri = "mongodb://mongo:27017"
+    database_uri = os.getenv("FIFTYONE_DATABASE_URI")
+    if not database_uri:
+        print("Error: FIFTYONE_DATABASE_URI environment variable is required!")
+        exit(1)
+    fo.config.database_uri = database_uri
     
     # Load frames dataset
     if not fo.dataset_exists(FRAMES_DATASET):
@@ -263,7 +267,7 @@ def process_frames_with_deepface():
     print(f"Số khuôn mặt mới được trích xuất trong lần chạy này: {total_faces_embedded}")
     print("-" * 30)
     print(f"Dữ liệu khuôn mặt đã được lưu vào dataset: '{FACE_DATASET_NAME}'")
-    print("\nTruy cập http://localhost:5151 để xem kết quả")
+    print("\nTruy cập http://localhost:" + os.getenv("FIFTYONE_PORT") + " để xem kết quả")
     print("="*60)
 
 

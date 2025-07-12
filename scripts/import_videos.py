@@ -1,11 +1,18 @@
 import fiftyone as fo
 import os
 
-# Cấu hình kết nối MongoDB trong container
-fo.config.database_uri = "mongodb://mongo:27017"
+# Cấu hình kết nối MongoDB từ biến môi trường
+database_uri = os.getenv("FIFTYONE_DATABASE_URI")
+if not database_uri:
+    print("Error: FIFTYONE_DATABASE_URI environment variable is required!")
+    exit(1)
+fo.config.database_uri = database_uri
 
-# Đường dẫn trong container (đã được mount)
-video_dir = "/fiftyone/data/videos"
+# Đường dẫn video từ biến môi trường
+video_dir = os.getenv("VIDEO_DIR")
+if not video_dir:
+    print("Error: VIDEO_DIR environment variable is required!")
+    exit(1)
 
 # Kiểm tra thư mục tồn tại
 if not os.path.exists(video_dir):
@@ -67,7 +74,12 @@ else:
     print(f"\nĐã import thành công {len(new_videos)} videos mới vào dataset '{dataset.name}'")
 
 print(f"Tổng số videos trong dataset: {len(dataset)}")
-print("Truy cập http://localhost:5151 để xem dataset")
+# Lấy port từ biến môi trường
+fiftyone_port = os.getenv("FIFTYONE_PORT")
+if not fiftyone_port:
+    print("Error: FIFTYONE_PORT environment variable is required!")
+    exit(1)
+print(f"Truy cập http://localhost:{fiftyone_port} để xem dataset")
 
 # In danh sách tất cả datasets
 print("\nDanh sách tất cả datasets:")

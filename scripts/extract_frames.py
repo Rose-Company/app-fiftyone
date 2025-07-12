@@ -3,7 +3,11 @@ from fiftyone import ViewField as F
 import os
 
 # Cấu hình kết nối MongoDB trong container
-fo.config.database_uri = "mongodb://mongo:27017"
+database_uri = os.getenv("FIFTYONE_DATABASE_URI")
+if not database_uri:
+    print("Error: FIFTYONE_DATABASE_URI environment variable is required!")
+    exit(1)
+fo.config.database_uri = database_uri
 
 # Load dataset video đã tạo trước đó
 dataset_name = "video_dataset_final"
@@ -138,7 +142,7 @@ for sample in frames_dataset.take(5):  # Chỉ hiển thị 5 frames đầu tiê
         if hasattr(sample, "timestamp"):
             print(f"- Timestamp: {sample.timestamp:.2f}s")
 
-print("\nTruy cập http://localhost:5151 để xem frames đã trích xuất")
+print("\nTruy cập http://localhost:" + os.getenv("FIFTYONE_PORT") + " để xem frames đã trích xuất")
 
 # In danh sách tất cả datasets
 print("\nDanh sách tất cả datasets:")

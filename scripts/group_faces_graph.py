@@ -101,8 +101,12 @@ def group_faces_into_characters_graph():
     print("="*70)
 
     # Connect to MongoDB
-    fo.config.database_uri = "mongodb://mongo:27017"
-    
+    database_uri = os.getenv("FIFTYONE_DATABASE_URI")
+    if not database_uri:
+        print("Error: FIFTYONE_DATABASE_URI environment variable is required!")
+        exit(1)
+    fo.config.database_uri = database_uri
+        
     if not fo.dataset_exists(FACE_DATASET_NAME):
         print(f"Error: Dataset '{FACE_DATASET_NAME}' not found.")
         return

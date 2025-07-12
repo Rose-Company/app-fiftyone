@@ -5,11 +5,13 @@ import numpy as np
 import json
 import time
 from datetime import datetime, timedelta
-import cv2
-import face_recognition
 
 # MongoDB connection configuration
-fo.config.database_uri = "mongodb://mongo:27017"
+database_uri = os.getenv("FIFTYONE_DATABASE_URI")
+if not database_uri:
+    print("Error: FIFTYONE_DATABASE_URI environment variable is required!")
+    exit(1)
+fo.config.database_uri = database_uri
 
 def load_character_dataset():
     """
@@ -211,11 +213,11 @@ def create_character_index():
     Only creates new files if there are changes detected
     """
     # Load the necessary datasets
-    if not fo.dataset_exists("video_dataset"):
+    if not fo.dataset_exists("video_dataset_final"):
         print("Video dataset not found. Please import videos first.")
         return False
         
-    if not fo.dataset_exists("video_dataset_frames"):
+    if not fo.dataset_exists("video_dataset_final_frames"):
         print("Frames dataset not found. Please extract frames first.")
         return False
     
@@ -232,7 +234,7 @@ def create_character_index():
     old_character_index = load_existing_character_index()
     
     # Get the original video dataset to create temporal annotations
-    video_dataset = fo.load_dataset("video_dataset")
+    video_dataset = fo.load_dataset("video_dataset_final")
     if len(video_dataset) == 0:
         print("No videos found in the dataset.")
         return False
@@ -530,11 +532,11 @@ def launch_character_search_app():
     Launch FiftyOne app with character search functionality
     """
     # Check if we have the necessary data
-    if not fo.dataset_exists("video_dataset"):
+    if not fo.dataset_exists("video_dataset_final"):
         print("Video dataset not found. Please import videos first.")
         return
     
-    video_dataset = fo.load_dataset("video_dataset")
+    video_dataset = fo.load_dataset("video_dataset_final")
     
     # Get characters from the index
     index_path = "/fiftyone/data/character_index.json"
@@ -556,7 +558,7 @@ def launch_character_search_app():
     # Print instructions for using the search functionality
     print("\nCharacter search is ready!")
     print("Use the following steps to search for character appearances:")
-    print("1. Open the FiftyOne App at http://localhost:5151")
+    print("1. Open the FiftyOne App at http://localhost:" + os.getenv("FIFTYONE_PORT") + "")
     print("2. Select the characters to search for and filter options")
     print("3. Use the 'video_dataset' to view the original videos")
     print(f"4. Characters available for search: {', '.join(characters)}")

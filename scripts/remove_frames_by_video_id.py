@@ -4,7 +4,11 @@ import os
 import shutil
 
 # Cấu hình kết nối MongoDB trong container
-fo.config.database_uri = "mongodb://mongo:27017"
+database_uri = os.getenv("FIFTYONE_DATABASE_URI")
+if not database_uri:
+    print("Error: FIFTYONE_DATABASE_URI environment variable is required!")
+    exit(1)
+fo.config.database_uri = database_uri
 
 def remove_frames_by_video_id(video_id, frames_dataset_name="video_dataset_faces_deepface_arcface_retinaface_final", remove_files=False):
     """

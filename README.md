@@ -1,209 +1,259 @@
 
-# FiftyOne Docker Project
+# FiftyOne Docker - Video Character Analysis System
 
-Dự án này cung cấp một môi trường Docker hoàn chỉnh để chạy FiftyOne và xử lý video/ảnh với khả năng phát hiện người và nhận diện khuôn mặt.
+Hệ thống phân tích nhân vật trong video sử dụng FiftyOne, AI face recognition và Docker. Cho phép tự động phát hiện, nhận diện và tìm kiếm nhân vật trong video.
 
-## Cấu trúc thư mục
-fiftyone-docker/
-├── docker-compose.yml - File cấu hình Docker Compose
-├── Dockerfile - File build image Docker
-├── scripts/ - Thư mục chứa các script Python
-└── data/ - Thư mục chứa dữ liệu (videos, frames)
+## 🎯 Tính năng chính
 
+- **Phân tích video tự động**: Trích xuất frames, phát hiện người, nhận diện khuôn mặt
+- **Nhận diện nhân vật**: Gom nhóm khuôn mặt thành các nhân vật duy nhất
+- **Tìm kiếm thông minh**: Tìm cảnh theo nhân vật, thời gian, điều kiện
+- **Giao diện trực quan**: FiftyOne UI để xem và phân tích dữ liệu
+- **Quản lý môi trường**: Cấu hình linh hoạt qua file .env
 
-
-## Cài đặt
-
-### Yêu cầu
+## 📋 Yêu cầu hệ thống
 
 - Docker và Docker Compose
 - Git
+- Tối thiểu 8GB RAM (khuyến nghị 16GB)
+- 10GB dung lượng trống
 
-### Các bước cài đặt
+## 🚀 Cài đặt nhanh
 
-1. Clone repository:
+### 1. Clone repository
 ```bash
-git clone https://github.com/[username]/fiftyone-docker.git
+git clone <repository-url>
 cd fiftyone-docker
 ```
 
-2. Tạo các thư mục data:
+### 2. Cấu hình môi trường
+```bash
+# Copy file cấu hình mẫu
+cp .env.example .env
+
+# Chỉnh sửa cấu hình nếu cần
+nano .env
+```
+
+### 3. Tạo thư mục dữ liệu
 ```bash
 mkdir -p data/videos data/frames
 ```
 
-3. Khởi động container:
+### 4. Khởi động hệ thống
 ```bash
+# Build và khởi động container
 docker-compose up -d
+
+# Kiểm tra trạng thái
+docker-compose ps
 ```
 
-4. Truy cập FiftyOne UI tại: http://localhost:5151
+### 5. Truy cập giao diện
+- **FiftyOne UI**: http://localhost:5151
+- **MongoDB**: mongodb://localhost:27017
 
-## Sử dụng
+## 📁 Cấu trúc dự án
 
-### Import video
+```
+fiftyone-docker/
+├── .env                     # Cấu hình môi trường (không commit)
+├── .env.example            # Mẫu cấu hình
+├── docker-compose.yml      # Cấu hình Docker Compose
+├── Dockerfile             # Docker image definition
+├── data/                  # Dữ liệu (được mount vào container)
+│   ├── videos/           # Video nguồn
+│   └── frames/           # Frames được trích xuất
+└── scripts/              # Python scripts
+    ├── import_videos.py          # Import video vào FiftyOne
+    ├── extract_frames.py         # Trích xuất frames
+    ├── extract_faces_deepface.py # Phát hiện khuôn mặt
+    ├── group_faces_graph.py      # Gom nhóm khuôn mặt
+    ├── character_search.py       # Tìm kiếm nhân vật
+    ├── remove_frames_by_video_id.py # Xóa frames theo video
+    └── test_env_vars.py          # Test cấu hình môi trường
+```
 
+
+
+
+## 📊 Quy trình xử lý
+
+### 1. Import Videos
 ```bash
+# Đặt video vào thư mục data/videos/
+cp your_video.mp4 data/videos/
+
+# Import vào FiftyOne
 docker exec -it fiftyone-docker-fiftyone-1 python /app/scripts/import_videos.py
 ```
 
-### Trích xuất frames từ video
-
+### 2. Trích xuất Frames
 ```bash
+# Trích xuất frames (1 frame/giây)
 docker exec -it fiftyone-docker-fiftyone-1 python /app/scripts/extract_frames.py
 ```
 
-### Phát hiện người trong frames
-
+### 3. Phát hiện Khuôn mặt
 ```bash
-docker exec -it fiftyone-docker-fiftyone-1 python /app/scripts/detect_people.py
+# Sử dụng DeepFace + RetinaFace
+docker exec -it fiftyone-docker-fiftyone-1 python /app/scripts/extract_faces_deepface.py
 ```
 
-### Nhận diện khuôn mặt
-
+### 4. Gom nhóm Nhân vật
 ```bash
-docker exec -it fiftyone-docker-fiftyone-1 python /app/scripts/face_recognition_utils.py
-```
-### Gom nhóm khuôn mặt
-
-```bash
-docker exec -it fiftyone-docker-fiftyone-1 python /app/scripts/group_faces_characters.py
+# Clustering khuôn mặt thành nhân vật
+docker exec -it fiftyone-docker-fiftyone-1 python /app/scripts/group_faces_graph.py
 ```
 
-## Quản lý dữ liệu
-
-Dữ liệu được lưu trữ trong MongoDB và có thể xem qua:
-- FiftyOne UI: http://localhost:5151
-- MongoDB Compass: mongodb://localhost:27017
-
-## Dừng và xóa container
-
+### 5. Tạo Index Tìm kiếm
 ```bash
-# Dừng container
+# Tạo character index
+docker exec -it fiftyone-docker-fiftyone-1 python /app/scripts/character_search.py
+```
+
+## 🔍 Tìm kiếm và Phân tích
+
+### Character Search
+- Tìm cảnh theo nhân vật cụ thể
+- Loại trừ nhân vật không mong muốn
+- Lọc theo thời gian xuất hiện
+- Kết quả được lưu trong `character_index.json`
+
+### Quản lý Dữ liệu
+```bash
+# Xóa frames của video cụ thể
+docker exec -it fiftyone-docker-fiftyone-1 python /app/scripts/remove_frames_by_video_id.py
+
+# Test cấu hình môi trường
+docker exec -it fiftyone-docker-fiftyone-1 python /app/scripts/test_env_vars.py
+```
+
+## 🛠️ Các lệnh hữu ích
+
+### Quản lý Container
+```bash
+# Khởi động
+docker-compose up -d
+
+# Dừng
 docker-compose down
 
-# Xóa volume (mất dữ liệu)
-docker-compose down -v
+# Xem logs
+docker-compose logs -f
+
+# Rebuild image
+docker-compose build --no-cache
+
+# Vào container
+docker exec -it fiftyone-docker-fiftyone-1 bash
 ```
-## Cài các thư viện nếu không muốn build lại Dockerfile
+
+### Cài đặt thêm thư viện
 ```bash
-docker-compose exec fiftyone pip install hdbscan
+# Cài đặt trong container đang chạy
+docker exec -it fiftyone-docker-fiftyone-1 pip install <package>
 
+# Hoặc thêm vào Dockerfile và rebuild
 ```
-## Test thử các video riêng biệt
+
+### Sao lưu và Khôi phục
 ```bash
-## Chaỵ frame mới chưa được detect 
-docker exec -it fiftyone-docker-fiftyone-1 python /app/scripts/detect_people_by_video.py test2 
-## Chạy lại tất cả frame của video 
-docker exec -it fiftyone-docker-fiftyone-1 python /app/scripts/detect_people_by_video.py test2 
+# Sao lưu MongoDB
+docker exec fiftyone-docker-mongo-1 mongodump --out /data/db/backup
 
-# Tạo dataset mới và xử lý lại, không ghi đè dataset cũ
-docker exec -it fiftyone-docker-fiftyone-1 python /app/scripts/extract_faces_by_video.py test --reprocess --new-dataset
-
-# Xử lý lại và ghi đè lên dataset cũ, không cần xác nhận
-docker exec -it fiftyone-docker-fiftyone-1 python /app/scripts/extract_faces_by_video.py test --reprocess --force
-
-# Xoá trùng lặp trong dataset faces
-docker exec -it fiftyone-docker-fiftyone-1 python /app/scripts/remove_duplicate_frames.py --dataset video_dataset_faces
-
-
+# Khôi phục
+docker exec fiftyone-docker-mongo-1 mongorestore /data/db/backup
 ```
-## Ghi chú
 
-- Đặt video trong thư mục `data/videos/` để import
-- Frames được trích xuất lưu trong `data/frames/`
-- MongoDB lưu trữ metadata trong volume Docker
+## 🔧 Troubleshooting
 
+### Lỗi thường gặp
 
-
-
-
-
-
-docker exec -it fiftyone-docker-fiftyone-1 fiftyone plugins download https://github.com/jacobmarks/clustering-plugin
-
-docker exec -it fiftyone-docker-fiftyone-1 pip install umap-learn
-
-
-import_videos -> 
-
-# Video Character Search System
-
-This system allows you to identify, search for, and navigate to scenes with specific characters in videos.
-
-## Overview
-
-The system processes videos through a pipeline:
-
-1. **Import Videos**: Add videos to the FiftyOne dataset
-2. **Extract Frames**: Sample frames from videos (1 per second)
-3. **Detect People**: Find people in each frame
-4. **Extract Faces**: Process detected people to find faces
-5. **Group Faces**: Cluster similar faces to identify unique characters
-6. **Character Search**: Create a searchable index and user interface
-
-## Prerequisites
-
-- Docker installed
-- FiftyOne Docker container running
-- Videos placed in the `/fiftyone/data/videos` directory
-
-## Running the Pipeline
-
-### Complete Pipeline
-
-To run the entire pipeline from start to finish:
-
+**1. Container không khởi động**
 ```bash
-python /app/scripts/run_pipeline.py
+# Kiểm tra logs
+docker-compose logs
+
+# Kiểm tra port conflict
+netstat -tulpn | grep 5151
 ```
 
-This will process your videos through all steps and launch the FiftyOne app with character search functionality.
-
-### Character Search Only
-
-If you've already completed steps 1-5 and just want to use the character search interface:
-
+**2. Lỗi môi trường**
 ```bash
-python /app/scripts/run_character_search.py
+# Test cấu hình
+docker exec -it fiftyone-docker-fiftyone-1 python /app/scripts/test_env_vars.py
+
+# Kiểm tra file .env
+cat .env
 ```
 
-## Using the Character Search Interface
+**3. Lỗi memory**
+```bash
+# Tăng memory limit trong .env
+MEMORY_LIMIT=32g
 
-1. Open the FiftyOne app at http://localhost:5151
-2. Look for the "Character Search" panel in the sidebar
-3. Use the interface to:
-   - Select characters you want to find
-   - Exclude characters you don't want in the scene
-   - Set minimum scene duration
-   - Click "Search for Character Appearances"
-4. Review results and click on any scene to navigate directly to that point in the video
+# Restart container
+docker-compose down && docker-compose up -d
+```
 
-## Features
+**4. Lỗi DeepFace/tf-keras**
+```bash
+# Cài đặt tf-keras
+docker exec -it fiftyone-docker-fiftyone-1 pip install tf-keras
 
-- **Character Detection**: Automatically identifies unique characters in the video
-- **Temporal Indexing**: Maps when each character appears in the video
-- **Flexible Search**: Find scenes based on which characters are present or absent
-- **Direct Navigation**: Jump directly to scenes containing selected characters
+# Hoặc rebuild image
+docker-compose build --no-cache
+```
 
-## Individual Scripts
+### Performance Tuning
 
-If needed, you can run individual steps:
+**Tăng hiệu suất:**
+- Tăng `MEMORY_LIMIT` và `SHARED_MEMORY_SIZE`
+- Điều chỉnh `OMP_NUM_THREADS` và `PYTORCH_NUM_THREADS`
+- Sử dụng SSD cho thư mục `data/`
 
-- `import_videos.py`: Add videos to FiftyOne
-- `extract_frames.py`: Sample frames from videos
-- `detect_people.py`: Find people in frames
-- `extract_faces.py`: Extract faces from person detections
-- `group_faces_characters.py`: Group faces into character clusters
-- `character_search.py`: Build the search index and launch the interface
+**Giảm memory usage:**
+- Xử lý video nhỏ hơn
+- Giảm fps khi extract frames
+- Batch processing với kích thước nhỏ hơn
 
-## Troubleshooting
+## 📊 Datasets và Outputs
 
-- If character grouping gives poor results, try adjusting clustering parameters in `group_faces_characters.py`
-- For large videos, you may need to adjust batch sizes to prevent out-of-memory errors
-- Check MongoDB connection if you see database connection errors
+### FiftyOne Datasets
+- `video_dataset_final`: Video gốc
+- `video_dataset_final_frames`: Frames đã trích xuất
+- `video_dataset_faces_deepface_arcface_retinaface_final`: Khuôn mặt đã phát hiện
 
-## Related Information
+### JSON Outputs
+- `character_index.json`: Index tìm kiếm nhân vật
+- `character_update.json`: Cập nhật gần đây
+- `character_update_metadata.json`: Metadata thay đổi
 
-- FiftyOne Documentation: https://docs.voxel51.com/
-- Face Recognition Documentation: https://github.com/ageitgey/face_recognition 
+## 🔐 Bảo mật
+
+- File `.env` chứa thông tin nhạy cảm - **KHÔNG commit**
+- Sử dụng `.env.example` làm template
+- Cấu hình firewall cho production
+- Thay đổi default ports nếu cần
+
+## 🤝 Đóng góp
+
+1. Fork repository
+2. Tạo feature branch
+3. Commit changes
+4. Push và tạo Pull Request
+
+## 📄 License
+
+[Thêm license information]
+
+## 📞 Hỗ trợ
+
+- **Issues**: Tạo issue trên GitHub
+- **Documentation**: FiftyOne docs tại https://docs.voxel51.com/
+- **Docker**: https://docs.docker.com/
+
+---
+
+**Lưu ý**: Đây là hệ thống phân tích video AI, cần tài nguyên tính toán đáng kể. Khuyến nghị chạy trên máy có GPU để tăng tốc độ xử lý. 

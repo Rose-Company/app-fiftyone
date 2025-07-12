@@ -154,7 +154,11 @@ def process_frames_with_dlib():
         print("Đang sử dụng detector dlib mặc định (không CNN)...")
     
     # Kết nối MongoDB
-    fo.config.database_uri = "mongodb://mongo:27017"
+    database_uri = os.getenv("FIFTYONE_DATABASE_URI")
+    if not database_uri:
+        print("Error: FIFTYONE_DATABASE_URI environment variable is required!")
+        exit(1)
+    fo.config.database_uri = database_uri
     fo.config.database_name = "fiftyone"
     
     # Load dataset frames
@@ -275,7 +279,7 @@ def process_frames_with_dlib():
         print(f"- Tỷ lệ frames có khuôn mặt: {face_ratio:.2f}%")
     
     print(f"\nĐã lưu thông tin khuôn mặt vào dataset '{face_dataset_name}'")
-    print("Truy cập http://localhost:5151 để xem kết quả")
+    print("Truy cập http://localhost:" + os.getenv("FIFTYONE_PORT") + " để xem kết quả")
 
 if __name__ == "__main__":
     process_frames_with_dlib()

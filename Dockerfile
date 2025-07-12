@@ -31,8 +31,8 @@ COPY scripts/requirements.txt /app/requirements.txt
 # Cài đặt thư viện Python
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Cài đặt FiftyOne
-RUN pip install --no-cache-dir fiftyone
+# Cài đặt FiftyOne và tf-keras (cho DeepFace)
+RUN pip install --no-cache-dir fiftyone tf-keras
 
 
 # Sao chép toàn bộ script vào container
