@@ -15,9 +15,10 @@ from app.repositories import (
 
 from app.utils import (
     init_db, 
-    db_manager,
     const
 )
+
+from app.utils.postgres import db_session
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Migration Service API")
@@ -34,20 +35,18 @@ def create_app() -> FastAPI:
     # Initialize database
     init_db()
 
-    # Get singleton database session
-    session = db_manager.get_session()
-    
-    # Create repositories and controllers
-    video_repo = VideoRepository(session)
-    character_repo = CharacterRepository(session)
-    character_appearance_repo = CharacterAppearanceRepository(session)
+    # Create repositories and controllers using session-per-request
+    with db_session() as session:
+        video_repo = VideoRepository(session)
+        character_repo = CharacterRepository(session)
+        character_appearance_repo = CharacterAppearanceRepository(session)
 
-    # Initialize routers
-    migrate_router = create_migrate_controllers(video_repo)
-    quiz_router = create_quiz_controllers(character_repo)
+        # Initialize routers
+        migrate_router = create_migrate_controllers(video_repo)
+        quiz_router = create_quiz_controllers(character_repo)
 
-    # Include routers with prefix
-    app.include_router(migrate_router, prefix=const.URL_PREFIX)
-    app.include_router(quiz_router, prefix=const.URL_PREFIX)
+        # Include routers with prefix
+        app.include_router(migrate_router, prefix=const.URL_PREFIX)
+        app.include_router(quiz_router, prefix=const.URL_PREFIX)
 
     return app

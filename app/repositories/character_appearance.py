@@ -1,4 +1,6 @@
 from sqlalchemy.orm import Session
+from sqlalchemy import cast, String
+from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from app.models.character_appearance import CharacterAppearance
 from app.schemas.character_appearance import CharacterAppearanceCreate, CharacterAppearanceUpdate
 from app.repositories.base import BaseRepository
@@ -10,9 +12,15 @@ class CharacterAppearanceRepository(BaseRepository):
         super().__init__(CharacterAppearance, db)
 
     def get_by_character_and_video(self, character_id: UUID, video_id: UUID) -> List[CharacterAppearance]:
+        # Ensure UUIDs are proper UUID objects
+        if not isinstance(character_id, UUID):
+            character_id = UUID(str(character_id))
+        if not isinstance(video_id, UUID):
+            video_id = UUID(str(video_id))
+            
         return self.session.query(CharacterAppearance).filter(
-            CharacterAppearance.character_id == character_id,
-            CharacterAppearance.video_id == video_id
+            cast(CharacterAppearance.character_id, String) == str(character_id),
+            cast(CharacterAppearance.video_id, String) == str(video_id)
         ).all()
 
     def create(self, appearance_data: CharacterAppearanceCreate) -> CharacterAppearance:
@@ -37,5 +45,6 @@ class CharacterAppearanceRepository(BaseRepository):
         
         success = super().update_by_id(appearance_id, update_data)
         if success:
-            return self.get_by_id(appearance_id)
+            result, error = self.get_by_id(appearance_id)
+            return result if not error else None
         return None 

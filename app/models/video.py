@@ -19,5 +19,5 @@ class Video(Base):
     created_by = Column(UUID(as_uuid=True), nullable=True)
     updated_at = Column(DateTime(timezone=True), nullable=True)
     updated_by = Column(UUID(as_uuid=True), nullable=True)
-    video_metadata = Column(JSON, nullable=True)
+    video_metadata = Column("metadata", JSON, nullable=True)  
     video_code = Column(String, nullable=True) 

@@ -26,5 +26,6 @@ class VideoRepository(BaseRepository):
         
         success = super().update_by_id(video_id, update_data)
         if success:
-            return self.get_by_id(video_id)
+            result, error = self.get_by_id(video_id)
+            return result if not error else None
         return None 

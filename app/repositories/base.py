@@ -1,8 +1,11 @@
 from app.utils import CustomError
-from typing import Type, TypeVar, Generic
+from typing import Type, TypeVar, Generic, Union
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.declarative import as_declarative, declared_attr
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import cast, String
+from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
+from uuid import UUID
 
 T = TypeVar('T')
 
@@ -30,10 +33,15 @@ class BaseRepository(Generic[T]):
 
     def get_by_id(
         self, 
-        id: int
+        id: Union[int, UUID]
     ) -> tuple[T, CustomError]:
         try:
-            result = self.session.query(self.model).filter_by(id=id).first()
+            if isinstance(id, UUID):
+                result = self.session.query(self.model).filter(
+                    cast(self.model.id, String) == str(id)
+                ).first()
+            else:
+                result = self.session.query(self.model).filter_by(id=id).first()
             return result, None
         except SQLAlchemyError as e:
             return None, e
@@ -41,6 +49,28 @@ class BaseRepository(Generic[T]):
             return None, CustomError(str(e))
         finally:
             self.session.close()
+            
+    def update_by_id(
+        self, 
+        id: Union[int, UUID], 
+        update_data: dict
+    ) -> bool:
+        try:
+            if isinstance(id, UUID):
+                updated = self.session.query(self.model).filter(
+                    cast(self.model.id, String) == str(id)
+                ).update(update_data)
+            else:
+                updated = self.session.query(self.model).filter_by(id=id).update(update_data)
+            
+            self.session.commit()
+            return updated > 0
+        except SQLAlchemyError as e:
+            self.session.rollback()
+            return False
+        except Exception as e:
+            self.session.rollback()
+            return False
         
     def get_all(self) -> tuple[list[T], CustomError]:
         try:

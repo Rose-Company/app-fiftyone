@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import uvicorn
-from app.utils.postgres import init_db, db_manager
+from app.utils.postgres import init_db, db_session
 from sqlalchemy import text
 from app.controllers import init_migration_controller
 from app.utils.logger import get_logger
@@ -49,16 +49,15 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     scheduler.shutdown()
-    db_manager.close_session()
     logger.info("Migration service scheduler shutdown")
 
 @app.get("/health")
 async def health_check():
     try:
-        # Check database connection
-        db = db_manager.get_session()
-        db.execute(text("SELECT 1"))
-        return {"status": "healthy", "database": "connected"}
+        # Check database connection using db_session
+        with db_session() as db:
+            db.execute(text("SELECT 1"))
+            return {"status": "healthy", "database": "connected"}
     except Exception as e:
         return {"status": "unhealthy", "database": "disconnected", "error": str(e)}
 

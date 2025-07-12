@@ -28,29 +28,6 @@ engine = create_engine(DATABASE_URL, echo=True, pool_size=5, max_overflow=10, po
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Singleton Database Session Manager
-class DatabaseManager:
-    _instance = None
-    _session = None
-    
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(DatabaseManager, cls).__new__(cls)
-        return cls._instance
-    
-    def get_session(self):
-        if self._session is None:
-            self._session = SessionLocal()
-        return self._session
-    
-    def close_session(self):
-        if self._session:
-            self._session.close()
-            self._session = None
-
-# Global instance
-db_manager = DatabaseManager()
-
 
 def init_db():
     Base.metadata.create_all(bind=engine)
@@ -69,5 +46,9 @@ def db_session():
     session = SessionLocal()
     try:
         yield session
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        raise e
     finally:
         session.close()

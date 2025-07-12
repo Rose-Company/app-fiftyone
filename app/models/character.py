@@ -17,6 +17,6 @@ class Character(Base):
     created_by = Column(UUID(as_uuid=True), nullable=True)
     updated_at = Column(DateTime(timezone=True), nullable=True)
     updated_by = Column(UUID(as_uuid=True), nullable=True)
-    character_metadata = Column(JSON, nullable=True)
+    character_metadata = Column("metadata", JSON, nullable=True)  
     video_id = Column(UUID(as_uuid=True), nullable=True)
     character_code = Column(String, nullable=True) 
