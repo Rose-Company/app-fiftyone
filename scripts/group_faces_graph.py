@@ -16,8 +16,8 @@ FACE_DATASET_NAME = "video_dataset_faces_deepface_arcface_retinaface_final"
 
 # Video IDs to process - specify which videos to test
 # Examples:
-# VIDEO_IDS_TO_PROCESS = ["video1", "video2"]  # Process only these specific videos
-VIDEO_IDS_TO_PROCESS = ["test11"]            # Process only one video
+VIDEO_IDS_TO_PROCESS = ["test2"]  # Process only these specific videos
+#VIDEO_IDS_TO_PROCESS = ["test1"]            # Process only one video
 # VIDEO_IDS_TO_PROCESS = None                  # Process all videos (default behavior)
 #VIDEO_IDS_TO_PROCESS = None  # Change this to specify which videos to process
 
