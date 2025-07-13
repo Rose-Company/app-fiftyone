@@ -4,27 +4,29 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "5151:5151"
+      - "${FIFTYONE_PORT}:${FIFTYONE_PORT}"
     volumes:
       - ./data:/fiftyone/data
       - ./scripts:/app/scripts
     restart: always
-    command: fiftyone app launch --address 0.0.0.0 --port 5151
+    command: fiftyone app launch --address ${FIFTYONE_ADDRESS} --port ${FIFTYONE_PORT}
     environment:
-      - FIFTYONE_DATABASE_URI=mongodb://mongo:27017
-      - FIFTYONE_DEFAULT_APP_ADDRESS=0.0.0.0
-      - OMP_NUM_THREADS=1
-      - PYTORCH_NUM_THREADS=1
-    shm_size: '2gb'
-    mem_limit: '8g'
-    mem_reservation: '4g'
+      - FIFTYONE_DATABASE_URI=${FIFTYONE_DATABASE_URI}
+      - FIFTYONE_DEFAULT_APP_ADDRESS=${FIFTYONE_ADDRESS}
+      - FIFTYONE_PORT=${FIFTYONE_PORT}
+      - VIDEO_DIR=${VIDEO_DIR}
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS}
+      - PYTORCH_NUM_THREADS=${PYTORCH_NUM_THREADS}
+    mem_limit: '${MEMORY_LIMIT}'
+    mem_reservation: '${MEMORY_RESERVATION}'
+    shm_size: '${SHARED_MEMORY_SIZE}'
     networks:
       - fiftyone-network
 
   mongo:
     image: mongo:latest
     ports:
-      - "27017:27017"
+      - "${MONGO_PORT}:27017"
     volumes:
       - fiftyone-mongo-data:/data/db
     networks:
