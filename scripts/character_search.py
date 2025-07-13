@@ -27,10 +27,13 @@ def load_character_dataset():
     print(f"Creating new character dataset '{character_dataset_name}'")
     return fo.Dataset(character_dataset_name)
 
-def frame_to_timestamp(frame_number, fps=1):
+def frame_to_timestamp(frame_number, fps=24):
     """Convert frame number to timestamp string"""
-    seconds = frame_number / fps
-    minutes, seconds = divmod(seconds, 60)
+    # Frame numbering starts from 1, so subtract 1 before dividing by fps
+    total_seconds = (frame_number - 1) / fps
+    # Round to nearest second for proper display
+    total_seconds = round(total_seconds)
+    minutes, seconds = divmod(total_seconds, 60)
     hours, minutes = divmod(minutes, 60)
     return f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
 
@@ -56,13 +59,74 @@ def extract_video_name_from_filepath(filepath):
     # Nếu không thể xác định từ đường dẫn
     return os.path.basename(filepath)
 
-def merge_close_segments(segments, merge_threshold_seconds=2):
+def detect_video_fps(face_dataset, video_name):
+    """
+    Detect FPS for a specific video by analyzing frame patterns
+    
+    Args:
+        face_dataset: FiftyOne dataset
+        video_name: Video name (e.g., "test1.mp4")
+        
+    Returns:
+        int: Detected FPS
+    """
+    # Get video base name without extension
+    video_base = video_name.replace('.mp4', '')
+    
+    # Find samples from this video - use better filtering
+    video_samples = []
+    for sample in face_dataset:
+        sample_path = sample.filepath
+        # Check if this sample belongs to the video
+        if f"/{video_base}/" in sample_path or f"\\{video_base}\\" in sample_path:
+            if hasattr(sample, 'frame_number'):
+                video_samples.append(sample.frame_number)
+    
+    if len(video_samples) < 10:
+        print(f"  Warning: Could not detect FPS for {video_name}, using default 24")
+        return 24
+    
+    # Sort frame numbers
+    video_samples.sort()
+    
+    # Analyze frame patterns to detect FPS
+    # Common patterns: 1,25,49,73... (24fps), 1,31,61,91... (30fps), 1,26,51,76... (25fps)
+    
+    # Check for common FPS patterns
+    if len(video_samples) >= 3:
+        # Calculate intervals between consecutive frames
+        intervals = []
+        for i in range(1, min(10, len(video_samples))):  # Check more samples
+            interval = video_samples[i] - video_samples[i-1]
+            intervals.append(interval)
+        
+        # Find the most common interval (this is the FPS)
+        from collections import Counter
+        interval_counts = Counter(intervals)
+        most_common_interval = interval_counts.most_common(1)[0][0]
+        
+        # The most common interval IS the FPS
+        fps = most_common_interval
+        
+        # Validate against known FPS values
+        if fps not in [24, 25, 30]:
+            # If not a standard FPS, default to 24
+            fps = 24
+            
+        print(f"  Detected FPS for {video_name}: {fps} (most common interval: {most_common_interval})")
+        return fps
+    
+    print(f"  Warning: Could not detect FPS for {video_name}, using default 24")
+    return 24
+
+def merge_close_segments(segments, merge_threshold_seconds=2, fps=24):
     """
     Merge segments that are very close to each other
     
     Args:
         segments: List of segment dictionaries with start_frame, end_frame, etc.
         merge_threshold_seconds: Maximum gap in seconds to merge segments
+        fps: Frames per second for the video
     
     Returns:
         List of merged segments
@@ -79,9 +143,9 @@ def merge_close_segments(segments, merge_threshold_seconds=2):
     for i in range(1, len(sorted_segments)):
         next_segment = sorted_segments[i]
         
-        # Assume 24 fps for gap calculation
+        # Use actual FPS for gap calculation
         gap_frames = next_segment["start_frame"] - current["end_frame"]
-        gap_seconds = gap_frames / 24.0
+        gap_seconds = gap_frames / fps
         
         if gap_seconds <= merge_threshold_seconds:
             # Merge segments
@@ -99,14 +163,14 @@ def merge_close_segments(segments, merge_threshold_seconds=2):
     
     return merged
 
-def group_consecutive_frames(frame_numbers, max_gap=1):
+def group_consecutive_frames(frame_numbers, fps=24, max_gap_seconds=1):
     """
-    Group consecutive frame numbers into scenes with improved gap handling
+    Group consecutive frame numbers into scenes based on actual time gaps
     
     Args:
         frame_numbers: List of frame numbers
-        max_gap: Maximum gap between frames to consider them part of the same scene
-                 Default is 1 frame (truly consecutive)
+        fps: Frames per second for the video
+        max_gap_seconds: Maximum gap in seconds to consider frames part of the same scene
     """
     if not frame_numbers:
         return []
@@ -117,7 +181,7 @@ def group_consecutive_frames(frame_numbers, max_gap=1):
     if len(sorted_frames) == 1:
         return [(sorted_frames[0], sorted_frames[0])]
     
-    # Gộp frames với logic cải tiến
+    # Tạo groups dựa trên khoảng cách thời gian thực tế
     groups = []
     current_start = sorted_frames[0]
     current_end = sorted_frames[0]
@@ -126,8 +190,13 @@ def group_consecutive_frames(frame_numbers, max_gap=1):
         current_frame = sorted_frames[i]
         prev_frame = sorted_frames[i-1]
         
-        # Nếu frame hiện tại gần với frame trước đó (trong khoảng max_gap)
-        if current_frame <= prev_frame + max_gap:
+        # Tính thời gian thực tế: (frame - 1) / fps
+        current_time = (current_frame - 1) / fps
+        prev_time = (prev_frame - 1) / fps
+        time_gap = current_time - prev_time
+        
+        # Nếu khoảng cách thời gian <= max_gap_seconds, coi là cùng scene
+        if time_gap <= max_gap_seconds:
             # Mở rộng nhóm hiện tại
             current_end = current_frame
         else:
@@ -140,11 +209,13 @@ def group_consecutive_frames(frame_numbers, max_gap=1):
     groups.append((current_start, current_end))
     
     # Debug information
-    print(f"  Frame grouping: {len(sorted_frames)} frames → {len(groups)} groups")
+    print(f"  Frame grouping: {len(sorted_frames)} frames → {len(groups)} groups (max_gap={max_gap_seconds}s)")
     if len(groups) <= 5:  # Only show details for small number of groups
         for i, (start, end) in enumerate(groups):
-            duration_frames = end - start
-            print(f"    Group {i+1}: frames {start}-{end} (duration: {duration_frames} frames)")
+            start_time = (start - 1) / fps
+            end_time = (end - 1) / fps
+            duration = end_time - start_time
+            print(f"    Group {i+1}: frames {start}-{end} (time: {start_time:.1f}s-{end_time:.1f}s, duration: {duration:.1f}s)")
     
     return groups
 
@@ -304,6 +375,18 @@ def create_character_index():
                         
                     character_appearances[character_name][video_name].append(frame_number)
     
+    # Detect FPS for each video
+    print("\nDetecting FPS for each video...")
+    video_fps_mapping = {}
+    processed_videos = set()
+    
+    for character, videos in character_appearances.items():
+        for video_name in videos.keys():
+            if video_name not in processed_videos:
+                fps = detect_video_fps(face_dataset, video_name)
+                video_fps_mapping[video_name] = fps
+                processed_videos.add(video_name)
+    
     # Group consecutive frames into scenes for each character
     character_scenes = {}
     for character, videos in character_appearances.items():
@@ -312,10 +395,13 @@ def create_character_index():
             print(f"\nProcessing character '{character}' in video '{video_name}':")
             print(f"  Found {len(frames)} frame appearances")
             
-            # Sử dụng max_gap nhỏ hơn cho frames thực sự liên tiếp
-            # max_gap=1: chỉ gộp frames liên tiếp trực tiếp
-            # max_gap=5: cho phép gộp frames cách nhau 1-5 frames (khoảng 0.2 giây)
-            character_scenes[character][video_name] = group_consecutive_frames(frames, max_gap=5)
+            # Use actual FPS for time-based grouping
+            fps = video_fps_mapping.get(video_name, 24)
+            # Allow gap of 1 second between frames to be considered same scene
+            max_gap_seconds = 1.0
+            
+            print(f"  Using FPS={fps}, max_gap={max_gap_seconds} seconds")
+            character_scenes[character][video_name] = group_consecutive_frames(frames, fps=fps, max_gap_seconds=max_gap_seconds)
     
     # Create temporal detections for each video sample
     for video_sample in video_dataset:
@@ -359,11 +445,8 @@ def create_character_index():
             video_base_name = video_name.split(".")[0]  # Bỏ extension
             fps = 24  # Default fps
             
-            # Tìm video tương ứng để lấy fps
-            for video_sample in video_dataset:
-                if video_base_name in video_sample.filepath:
-                    fps = video_sample.metadata.frame_rate if hasattr(video_sample.metadata, "frame_rate") else 24
-                    break
+            # Use detected FPS instead of metadata
+            fps = video_fps_mapping.get(video_name, 24)
             
             # Tạo character_name có chứa tên video để phân biệt rõ hơn
             # Ví dụ: "Character 0 (test2)" thay vì chỉ "Character 0"
@@ -383,10 +466,8 @@ def create_character_index():
                 for start_frame, end_frame in scenes
             ]
             
-            # Merge close segments to fix fragmented appearances
-            print(f"  Before merging: {len(scenes_list)} segments")
-            scenes_list = merge_close_segments(scenes_list, merge_threshold_seconds=3)
-            print(f"  After merging: {len(scenes_list)} segments")
+            # Segments are already properly grouped by time-based logic
+            print(f"  Created {len(scenes_list)} segments")
             
             character_index[video_name][character_name] = scenes_list
     
